@@ -1,0 +1,572 @@
+name: facebook/flow/build_and_test
+on:
+  push:
+    branches:
+    - main
+env:
+  AWS_ACCESS_KEY_ID: xxxxUUFG
+  AWS_SECRET_ACCESS_KEY: xxxxMSzY
+  CLOUDFRONT_ID: xxxxZHP9
+  CLOUDFRONT_ID_NEW_WEBSITE: xxxxUKJ4
+  DOC_BOT_TOKEN: xxxxwpcy
+  FLOW_BIN_PRIVATE_KEY_BASE64: xxxxLS0K
+  FLOW_BOT_EMAIL: xxxx.com
+  FLOW_BOT_TOKEN: xxxxX27z
+  NPM_TOKEN: xxxxAJvJ
+  S3_BUCKET: xxxx.org
+  S3_BUCKET_NEW_WEBSITE: xxxxtorg
+jobs:
+  checkout:
+    runs-on: ubuntu-latest
+    container:
+      image: node:12
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: "./."
+  build_js:
+    runs-on: ubuntu-latest
+    container:
+      image: flowtype/flow-ci:linux-x86_64
+      env:
+        TERM: dumb
+        OPAMYES: true
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - name: Install extra deps from opam
+      run: make deps-js
+    - uses: "./.github/actions/save-opam-cache"
+    - name: Build flow.js
+      run: opam exec -- make js
+    - name: Build flow_parser.js
+      run: opam exec -- make -C src/parser js
+    - name: Create artifacts
+      run: |-
+        mkdir -p dist
+        cp src/parser/flow_parser.js dist/flow_parser.js
+        cp src/parser/flow_parser.js packages/flow-parser/flow_parser.js
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/flow.js
+          ./dist/flow_parser.js
+          ./packages/flow-parser/flow_parser.js
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: bin/flow.js
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/flow_parser.js
+  build_linux:
+    runs-on: ubuntu-latest
+    container:
+      image: flowtype/flow-ci:linux-x86_64
+      env:
+        TERM: dumb
+        OPAMYES: true
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - name: Install extra deps from opam
+      run: make deps-js
+    - uses: "./.github/actions/save-opam-cache"
+    - name: Build flow
+      run: |-
+        opam exec -- make bin/flow dist/flow.zip
+        mkdir -p bin/linux && cp bin/flow bin/linux/flow
+    - name: Build libflowparser
+      run: opam exec -- make -C src/parser dist/libflowparser.zip
+    - name: Create artifacts
+      run: |-
+        cp dist/flow.zip dist/flow-linux64.zip
+        cp src/parser/dist/libflowparser.zip dist/libflowparser-linux64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/linux/flow
+          ./dist/flow-linux64.zip
+          ./dist/libflowparser-linux64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/flow-linux64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/libflowparser-linux64.zip
+  build_linux_arm64:
+    runs-on: ubuntu-20.04
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Start Docker image
+      run: |-
+        rm -rf /home/circleci/.opam && mkdir /home/circleci/.opam
+        container_id=$(\
+          docker run -it -d \
+            --mount type=bind,source=/home/circleci/.opam,target=/home/opam/.opam \
+            --mount type=bind,source=/home/circleci/flow,target=/home/opam/flow \
+            flowtype/flow-ci:linux-arm64 \
+            /bin/bash \
+        )
+        echo "export CONTAINER_ID=$container_id" >> $BASH_ENV
+    - name: Create cache breaker
+      run: docker exec -it $CONTAINER_ID /bin/bash -c 'cd flow && .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker'
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: docker exec -it $CONTAINER_ID /bin/bash -c 'flow/.circleci/opam_init.sh'
+    - name: Install opam deps
+      run: docker exec -it $CONTAINER_ID /bin/bash -c 'cd flow && make deps'
+    - uses: "./.github/actions/save-opam-cache"
+    - name: Build flow
+      run: |-
+        docker exec -it $CONTAINER_ID /bin/bash -c 'cd flow && opam exec -- make bin/flow dist/flow.zip'
+        mkdir -p bin/linux-arm64 && cp bin/flow bin/linux-arm64/flow
+    - name: Build libflowparser
+      run: docker exec -it $CONTAINER_ID /bin/bash -c 'cd flow && opam exec -- make -C src/parser dist/libflowparser.zip'
+    - name: Stop Docker container
+      run: docker stop $CONTAINER_ID
+    - name: Create artifacts
+      run: |-
+        cp dist/flow.zip dist/flow-linux-arm64.zip
+        cp src/parser/dist/libflowparser.zip dist/libflowparser-linux-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/linux-arm64/flow
+          ./dist/flow-linux-arm64.zip
+          ./dist/libflowparser-linux-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/flow-linux-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/libflowparser-linux-arm64.zip
+  build_macos:
+    runs-on: macos-latest
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: maxim-lobanov/setup-xcode@v1.6.0
+      with:
+        xcode-version: '13.4'
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Update curl cacerts
+      run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
+    - uses: "./.github/actions/install-opam-mac"
+      with:
+        arch: x86_64
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - uses: "./.github/actions/save-opam-cache"
+    - name: Build flow
+      run: |-
+        opam exec -- make bin/flow dist/flow.zip
+        mkdir -p bin/macos && cp bin/flow bin/macos/flow
+    - name: Build libflowparser
+      run: opam exec -- make -C src/parser dist/libflowparser.zip
+    - name: Create artifacts
+      run: |-
+        cp dist/flow.zip dist/flow-osx.zip
+        cp src/parser/dist/libflowparser.zip dist/libflowparser-osx.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/macos/flow
+          ./dist/flow-osx.zip
+          ./dist/libflowparser-osx.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/flow-osx.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: src/parser/dist/libflowparser.zip
+  build_macos_arm64:
+    runs-on: macos-latest
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: maxim-lobanov/setup-xcode@v1.6.0
+      with:
+        xcode-version: 14.2.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Update curl cacerts
+      run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
+    - uses: "./.github/actions/install-opam-mac"
+      with:
+        arch: arm64
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - uses: "./.github/actions/save-opam-cache"
+    - name: Build flow
+      run: |-
+        opam exec -- make bin/flow dist/flow.zip
+        mkdir -p bin/macos-arm64 && cp bin/flow bin/macos-arm64/flow
+    - name: Build libflowparser
+      run: opam exec -- make -C src/parser dist/libflowparser.zip
+    - name: Create artifacts
+      run: |-
+        cp dist/flow.zip dist/flow-osx-arm64.zip
+        cp src/parser/dist/libflowparser.zip dist/libflowparser-osx-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/macos-arm64/flow
+          ./dist/flow-osx-arm64.zip
+          ./dist/libflowparser-osx-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/flow-osx-arm64.zip
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: src/parser/dist/libflowparser-osx-arm64.zip
+  build_win:
+    runs-on: ubuntu-latest
+    needs:
+    - checkout
+    env:
+      FLOW_TMP_DIR: C:\tmp\flow
+      OPAMDOWNLOADJOBS: 1
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "."
+    - name: Set up workspace
+      run: New-Item -ItemType Directory $Env:FLOW_TMP_DIR
+    - uses: "./.github/actions/install"
+    - name: Create cache breaker
+      run: |-
+        cd "${{ github.workspace }}"
+        /usr/bin/make print-switch > /cygdrive/c/tmp/flow/opamcachebreaker
+        /usr/local/bin/opam --version >> /cygdrive/c/tmp/flow/opamcachebreaker
+        /usr/bin/cat flowtype.opam >> /cygdrive/c/tmp/flow/opamcachebreaker
+        /usr/bin/cat flow_parser.opam >> /cygdrive/c/tmp/flow/opamcachebreaker
+        /usr/bin/cat .circleci/config.yml >> /cygdrive/c/tmp/flow/opamcachebreaker
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+    - name: restore_cache
+      uses: actions/cache@v3.3.2
+      with:
+        key: opam-cache-{{ arch }}-{{ checksum "C:/tmp/flow/opamcachebreaker" }}
+        path: |-
+          C:/tools/cygwin/home/circleci/.opam
+          _opam
+        restore-keys: opam-cache-{{ arch }}-{{ checksum "C:/tmp/flow/opamcachebreaker" }}
+    - name: Init opam
+      run: opam init default 'https://github.com/ocaml-opam/opam-repository-mingw.git#opam2' --bare --disable-sandboxing --no-setup
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+    - name: Create opam switch
+      run: |-
+        cd "${{ github.workspace }}"
+        make deps
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+      env:
+        PATH: "/usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0"
+    - name: Build flow.exe
+      run: |-
+        cd "${{ github.workspace }}"
+        eval $(opam env)
+        make bin/flow.exe dist/flow.zip
+        mkdir -p bin/win64 && cp bin/flow.exe bin/win64/flow.exe
+        cp dist/flow.zip dist/flow-win64.zip
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+      env:
+        PATH: "/usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0"
+    - name: Build parser test runner
+      run: |-
+        cd "${{ github.workspace }}"
+        eval $(opam env)
+        dune build src/parser/test/run_tests.exe
+        cp _build/default/src/parser/test/run_tests.exe bin/win64/run_parser_tests.exe
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+      env:
+        PATH: "/usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0"
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./bin/win64/flow.exe
+          ./dist/flow-win64.zip
+          ./bin/win64/run_parser_tests.exe
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: ".\\dist\\flow-win64.zip"
+  runtests_linux:
+    runs-on: ubuntu-latest
+    container:
+      image: node:12
+    needs:
+    - build_linux
+    env:
+      FLOW_RUNTESTS_PARALLELISM: 8
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Run tests
+      run: "./runtests.sh bin/linux/flow | cat"
+  runtests_linux_arm64:
+    runs-on: ubuntu-20.04
+    needs:
+    - build_linux_arm64
+    env:
+      FLOW_RUNTESTS_PARALLELISM: 8
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Run tests
+      run: "./runtests.sh bin/linux-arm64/flow | cat"
+  runtests_macos:
+    runs-on: macos-latest
+    needs:
+    - build_macos
+    steps:
+    - uses: maxim-lobanov/setup-xcode@v1.6.0
+      with:
+        xcode-version: '13.4'
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Run tests
+      run: "./runtests.sh bin/macos/flow | cat"
+  tool_test_linux:
+    runs-on: ubuntu-latest
+    container:
+      image: node:12
+    needs:
+    - build_linux
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Install tool deps from yarn
+      run: "(cd packages/flow-dev-tools && yarn install | cat)"
+    - name: Run tool tests
+      run: "./tool test -p 4 --bin bin/linux/flow | cat"
+  tool_test_macos:
+    runs-on: macos-latest
+    needs:
+    - build_macos
+    steps:
+    - uses: maxim-lobanov/setup-xcode@v1.6.0
+      with:
+        xcode-version: '13.4'
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Install tool deps from yarn
+      run: "(cd packages/flow-dev-tools && yarn install | cat)"
+    - name: Run tool tests
+      run: "./tool test --bin bin/macos/flow | cat"
+  tool_test_win:
+    runs-on: ubuntu-latest
+    needs:
+    - build_win
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "."
+    - name: Turn off nvm
+      run: nvm off
+    - name: Install Node LTS
+      run: choco install nodejs-lts -y
+    - name: Enable Corepack
+      run: corepack enable
+    - name: Install tool deps from yarn
+      run: |-
+        cd packages/flow-dev-tools
+        yarn install --ignore-scripts --pure-lockfile
+    - name: Run tool tests
+      run: node packages/flow-dev-tools/bin/tool test --bin bin/win64/flow.exe --parallelism 1
+      shell: bash
+  ounit_test_linux:
+    runs-on: ubuntu-latest
+    container:
+      image: flowtype/flow-ci:linux-x86_64
+      env:
+        TERM: dumb
+        OPAMYES: true
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - name: Install extra deps from opam
+      run: make deps-test | cat
+    - name: Run ounit tests
+      run: opam exec -- make ounit-tests-ci
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: test-results/ounit/
+  ounit_test_macos:
+    runs-on: macos-latest
+    needs:
+    - checkout
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: maxim-lobanov/setup-xcode@v1.6.0
+      with:
+        xcode-version: '13.4'
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Update curl cacerts
+      run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
+    - uses: "./.github/actions/install-opam-mac"
+      with:
+        arch: x86_64
+    - uses: "./.github/actions/make-opam-cachebreaker"
+    - uses: "./.github/actions/restore-opam-cache"
+    - name: Init opam
+      run: ".circleci/opam_init.sh"
+    - uses: "./.github/actions/create-opam-switch"
+    - name: Install extra deps from opam
+      run: make deps-test | cat
+    - name: Run ounit tests
+      run: opam exec -- make ounit-tests-ci
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: test-results/ounit/
+  parser_test_win:
+    runs-on: ubuntu-latest
+    needs:
+    - build_win
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "."
+    - name: Test parser
+      run: |-
+        .\bin\win64\run_parser_tests.exe .\src\parser\test\flow\
+        if ($LASTEXITCODE -gt 0) {
+          Throw "flow parser hardcoded ocaml tests exited with error code: $LASTEXITCODE"
+        }
+        .\bin\win64\run_parser_tests.exe .\src\parser\test\esprima\
+        if ($LASTEXITCODE -gt 0) {
+          Throw "flow parser esprima ocaml tests exited with error code: $LASTEXITCODE"
+        }
+  npm_pack:
+    runs-on: ubuntu-latest
+    container:
+      image: node:12
+    needs:
+    - build_js
+    - build_linux
+    - build_linux_arm64
+    - build_macos
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: Pack flow-parser
+      run: |-
+        mkdir -p packages/flow-parser/dist/
+        cp dist/flow_parser.js packages/flow-parser/dist/flow_parser.js
+        make dist/npm-flow-parser.tgz
+    - name: Pack flow-parser-bin
+      run: |-
+        mkdir -p packages/flow-parser-bin/dist/release/
+        cp dist/libflowparser-linux64.zip packages/flow-parser-bin/dist/release/libflowparser-linux64.zip
+        cp dist/libflowparser-linux-arm64.zip packages/flow-parser-bin/dist/release/libflowparser-linux-arm64.zip
+        cp dist/libflowparser-osx.zip packages/flow-parser-bin/dist/release/libflowparser-osx.zip
+        make dist/npm-flow-parser-bin.tgz
+    - name: Pack flow-remove-types and flow-node
+      run: |-
+        rm -rf packages/flow-node
+        cp -r packages/flow-remove-types/ packages/flow-node/
+        sed -i '0,/flow-remove-types/s//flow-node/' packages/flow-node/package.json
+        make dist/npm-flow-remove-types.tgz
+        make dist/npm-flow-node.tgz
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: |-
+          ./dist/npm-flow-parser.tgz
+          ./dist/npm-flow-parser-bin.tgz
+          ./dist/npm-flow-node.tgz
+          ./dist/npm-flow-remove-types.tgz
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/npm-flow-parser.tgz
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/npm-flow-parser-bin.tgz
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/npm-flow-node.tgz
+    - uses: actions/upload-artifact@v3.1.3
+      with:
+        path: dist/npm-flow-remove-types.tgz
+  website_deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/facebook/flow-website:latest
+    needs:
+    - build_linux
+    - build_js
+    steps:
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        path: "~/flow"
+    - name: restore_cache
+      uses: actions/cache@v3.3.2
+      with:
+        key: v2-node-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/yarn.lock" }}
+        path: website/node_modules
+        restore-keys: v2-node-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/yarn.lock" }}
+    - name: Install yarn deps
+      run: cd website && yarn install
+    - name: Build website
+      run: PATH=~/flow/bin/linux:$PATH .circleci/build_website.sh
+    - name: restore_cache
+      uses: actions/cache@v3.3.2
+      with:
+        key: v2-gem-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/Gemfile.lock" }}
+        path: UPDATE_ME
+        restore-keys: v2-gem-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/Gemfile.lock" }}
+    - name: Publish website to GitHub Pages
+      run: |-
+        cd website
+        yarn add gh-pages
+        yarn gh-pages -d build -u "flow-bot <flow-bot@users.noreply.github.com>" --repo https://${FLOW_BOT_TOKEN}@github.com/facebook/flow.git --no-history
