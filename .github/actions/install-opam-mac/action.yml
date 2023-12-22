@@ -1,0 +1,16 @@
+name: install-opam-mac
+inputs:
+  arch:
+    required: false
+runs:
+  using: composite
+  steps:
+  - name: Install opam
+    run: |-
+      if ! [ -x "$(command -v opam)" ]; then
+        TMP=${TMPDIR:-/tmp}
+        curl -sL -o "$TMP/opam" "https://github.com/ocaml/opam/releases/download/2.0.10/opam-2.0.10-${{ inputs.arch }}-macos"
+        install -m 755 "$TMP/opam" "/usr/local/bin/opam"
+        rm -f "$TMP/opam"
+      fi
+    shell: bash
