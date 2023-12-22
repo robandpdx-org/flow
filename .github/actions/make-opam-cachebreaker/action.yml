@@ -1,0 +1,7 @@
+name: make-opam-cachebreaker
+runs:
+  using: composite
+  steps:
+  - name: Create cache breaker
+    run: ".circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker"
+    shell: bash
