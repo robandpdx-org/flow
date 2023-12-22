@@ -1,5 +1,9 @@
 name: facebook/flow/build_and_test
 on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+    - main
   push:
     branches:
     - main
@@ -16,15 +20,6 @@ env:
   S3_BUCKET: xxxx.org
   S3_BUCKET_NEW_WEBSITE: xxxxtorg
 jobs:
-  checkout:
-    runs-on: ubuntu-latest
-    container:
-      image: node:12
-    steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/upload-artifact@v3.1.3
-      with:
-        path: "./."
   build_js:
     runs-on: ubuntu-latest
     container:
@@ -32,13 +27,8 @@ jobs:
       env:
         TERM: dumb
         OPAMYES: true
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - uses: "./.github/actions/make-opam-cachebreaker"
     - uses: "./.github/actions/restore-opam-cache"
     - name: Init opam
@@ -75,13 +65,8 @@ jobs:
       env:
         TERM: dumb
         OPAMYES: true
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - uses: "./.github/actions/make-opam-cachebreaker"
     - uses: "./.github/actions/restore-opam-cache"
     - name: Init opam
@@ -114,13 +99,8 @@ jobs:
         path: dist/libflowparser-linux64.zip
   build_linux_arm64:
     runs-on: ubuntu-20.04
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - name: Start Docker image
       run: |-
         rm -rf /home/circleci/.opam && mkdir /home/circleci/.opam
@@ -166,16 +146,11 @@ jobs:
         path: dist/libflowparser-linux-arm64.zip
   build_macos:
     runs-on: macos-latest
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
     - uses: maxim-lobanov/setup-xcode@v1.6.0
       with:
         xcode-version: '13.4'
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - name: Update curl cacerts
       run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
     - uses: "./.github/actions/install-opam-mac"
@@ -211,16 +186,11 @@ jobs:
         path: src/parser/dist/libflowparser.zip
   build_macos_arm64:
     runs-on: macos-latest
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
     - uses: maxim-lobanov/setup-xcode@v1.6.0
       with:
         xcode-version: 14.2.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - name: Update curl cacerts
       run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
     - uses: "./.github/actions/install-opam-mac"
@@ -256,16 +226,11 @@ jobs:
         path: src/parser/dist/libflowparser-osx-arm64.zip
   build_win:
     runs-on: ubuntu-latest
-    needs:
-    - checkout
     env:
       FLOW_TMP_DIR: C:\tmp\flow
       OPAMDOWNLOADJOBS: 1
     steps:
     - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "."
     - name: Set up workspace
       run: New-Item -ItemType Directory $Env:FLOW_TMP_DIR
     - uses: "./.github/actions/install"
@@ -333,9 +298,7 @@ jobs:
     env:
       FLOW_RUNTESTS_PARALLELISM: 8
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Run tests
       run: "./runtests.sh bin/linux/flow | cat"
   runtests_linux_arm64:
@@ -345,9 +308,7 @@ jobs:
     env:
       FLOW_RUNTESTS_PARALLELISM: 8
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Run tests
       run: "./runtests.sh bin/linux-arm64/flow | cat"
   runtests_macos:
@@ -358,9 +319,7 @@ jobs:
     - uses: maxim-lobanov/setup-xcode@v1.6.0
       with:
         xcode-version: '13.4'
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Run tests
       run: "./runtests.sh bin/macos/flow | cat"
   tool_test_linux:
@@ -370,9 +329,7 @@ jobs:
     needs:
     - build_linux
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Install tool deps from yarn
       run: "(cd packages/flow-dev-tools && yarn install | cat)"
     - name: Run tool tests
@@ -385,9 +342,7 @@ jobs:
     - uses: maxim-lobanov/setup-xcode@v1.6.0
       with:
         xcode-version: '13.4'
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Install tool deps from yarn
       run: "(cd packages/flow-dev-tools && yarn install | cat)"
     - name: Run tool tests
@@ -397,9 +352,7 @@ jobs:
     needs:
     - build_win
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "."
+    - uses: actions/checkout@v4.1.0
     - name: Turn off nvm
       run: nvm off
     - name: Install Node LTS
@@ -420,13 +373,8 @@ jobs:
       env:
         TERM: dumb
         OPAMYES: true
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - uses: "./.github/actions/make-opam-cachebreaker"
     - uses: "./.github/actions/restore-opam-cache"
     - name: Init opam
@@ -441,16 +389,11 @@ jobs:
         path: test-results/ounit/
   ounit_test_macos:
     runs-on: macos-latest
-    needs:
-    - checkout
     steps:
     - uses: actions/checkout@v4.1.0
     - uses: maxim-lobanov/setup-xcode@v1.6.0
       with:
         xcode-version: '13.4'
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
     - name: Update curl cacerts
       run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
     - uses: "./.github/actions/install-opam-mac"
@@ -473,9 +416,7 @@ jobs:
     needs:
     - build_win
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "."
+    - uses: actions/checkout@v4.1.0
     - name: Test parser
       run: |-
         .\bin\win64\run_parser_tests.exe .\src\parser\test\flow\
@@ -496,9 +437,7 @@ jobs:
     - build_linux_arm64
     - build_macos
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: Pack flow-parser
       run: |-
         mkdir -p packages/flow-parser/dist/
@@ -546,9 +485,7 @@ jobs:
     - build_linux
     - build_js
     steps:
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        path: "~/flow"
+    - uses: actions/checkout@v4.1.0
     - name: restore_cache
       uses: actions/cache@v3.3.2
       with:
