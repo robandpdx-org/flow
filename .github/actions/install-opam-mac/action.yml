@@ -10,8 +10,11 @@ runs:
   - name: Install opam
     run: |-
       if ! [ -x "$(command -v opam)" ]; then
+        echo "Downloading opam..."
         curl -sL -o "$RUNNER_TEMP/opam" "https://github.com/ocaml/opam/releases/download/2.0.10/opam-2.0.10-${{ inputs.arch }}-macos"
+        echo "Installing opam..."
         install -m 755 "$RUNNER_TEMP/opam" "/usr/local/bin/opam"
+        echo "Removing opam temp file..."
         rm -f "$RUNNER_TEMP/opam"
       fi
     shell: bash

@@ -154,7 +154,7 @@ jobs:
       with:
         xcode-version: '13.4'
     - name: Update curl cacerts
-      run: echo "cacert /Users/$USER/flow/.circleci/cacert.pem" >> ~/.curlrc
+      run: echo "cacert $GITHUB_WORKSPACE/.circleci/cacert.pem" >> ~/.curlrc
     - uses: "./.github/actions/install-opam-mac"
       with:
         arch: x86_64
