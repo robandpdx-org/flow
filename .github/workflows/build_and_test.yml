@@ -109,7 +109,7 @@ jobs:
         container_id=$(\
           docker run -it -d \
             --mount type=bind,source=$GITHUB_WORKSPACE/.opam,target=/home/opam/.opam \
-            --mount type=bind,source=$GITHUB_WORKSPACE/flow,target=/home/opam/flow \
+            --mount type=bind,source=$GITHUB_WORKSPACE,target=/home/opam/flow \
             flowtype/flow-ci:linux-arm64 \
             /bin/bash \
         )
