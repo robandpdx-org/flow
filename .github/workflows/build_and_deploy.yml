@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: flowtype/flow-ci:linux-x86_64
-      options: --user opam
+      options: --user root
       env:
         TERM: dumb
         OPAMYES: true
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: flowtype/flow-ci:linux-x86_64
-      options: --user opam
+      options: --user root
       env:
         TERM: dumb
         OPAMYES: true
