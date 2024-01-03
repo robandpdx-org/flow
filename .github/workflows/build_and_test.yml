@@ -193,10 +193,11 @@ jobs:
       run: |-
         cd "${{ github.workspace }}"
         make print-switch > $RUNNER_TEMP/opamcachebreaker
-        /usr/local/bin/opam --version >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat flow_parser.opam >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat .circleci/config.yml >> $RUNNER_TEMP/opamcachebreaker
+        opam --version >> $RUNNER_TEMP/opamcachebreaker
+        cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
+        
+        cat flow_parser.opam >> $RUNNER_TEMP/opamcachebreaker
+        cat .circleci/config.yml >> $RUNNER_TEMP/opamcachebreaker
       shell: bash
     - name: Cache
       uses: actions/cache@v3.3.2
