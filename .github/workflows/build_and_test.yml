@@ -191,6 +191,7 @@ jobs:
     - uses: "./.github/actions/install"
     - name: Create cache breaker
       run: |-
+        echo "RUNNER_TEMP = $RUNNER_TEMP"
         /usr/bin/make print-switch > $RUNNER_TEMP/opamcachebreaker
         /usr/local/bin/opam --version >> $RUNNER_TEMP/opamcachebreaker
         /usr/bin/cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
