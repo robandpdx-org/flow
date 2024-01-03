@@ -201,8 +201,8 @@ jobs:
       shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
     - name: Create opam switch
       run: |-
-        make deps
-      shell: bash
+        /usr/bin/make deps
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
       working-directory: ${{ github.workspace }}
       env:
         PATH: "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
@@ -213,7 +213,7 @@ jobs:
         make bin/flow.exe dist/flow.zip
         mkdir -p bin/win64 && cp bin/flow.exe bin/win64/flow.exe
         cp dist/flow.zip dist/flow-win64.zip
-      shell: bash
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
       env:
         PATH: "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
     - name: Build parser test runner
@@ -222,7 +222,7 @@ jobs:
         eval $(opam env)
         dune build src/parser/test/run_tests.exe
         cp _build/default/src/parser/test/run_tests.exe bin/win64/run_parser_tests.exe
-      shell: bash
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
       env:
         PATH: "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
     - uses: actions/upload-artifact@v3.1.3
