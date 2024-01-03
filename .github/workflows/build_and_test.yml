@@ -191,6 +191,7 @@ jobs:
     - uses: "./.github/actions/install"
     - name: Create cache breaker
       run: |-
+        cd ${{ github.workspace }}}
         /usr/bin/make print-switch > /cygdrive/d/a/_temp/opamcachebreaker
         /usr/local/bin/opam --version >> /cygdrive/d/a/_temp/opamcachebreaker
         /usr/bin/cat flowtype.opam >> /cygdrive/d/a/_temp/opamcachebreaker
