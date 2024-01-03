@@ -198,12 +198,12 @@ jobs:
           _opam
     - name: Init opam
       run: opam init default 'https://github.com/ocaml-opam/opam-repository-mingw.git#opam2' --bare --disable-sandboxing --no-setup
-      shell: bash
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
     - name: Create opam switch
       run: |-
-        cd "${{ github.workspace }}"
         make deps
       shell: bash
+      working-directory: ${{ github.workspace }}
       env:
         PATH: "/usr/local/bin:/usr/bin:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/WindowsPowerShell/v1.0"
     - name: Build flow.exe
