@@ -198,7 +198,7 @@ jobs:
           _opam
     - name: Init opam
       run: opam init default 'https://github.com/ocaml-opam/opam-repository-mingw.git#opam2' --bare --disable-sandboxing --no-setup
-      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
     - name: Create opam switch
       run: |-
         make deps
