@@ -196,7 +196,7 @@ jobs:
         /usr/bin/cat flowtype.opam >> /cygdrive/d/a/_temp/opamcachebreaker
         /usr/bin/cat flow_parser.opam >> /cygdrive/d/a/_temp/opamcachebreaker
         /usr/bin/cat .circleci/config.yml >> /cygdrive/d/a/_temp/opamcachebreaker
-      shell: C:\tools\cygwin\bin\bash.exec -leo pipefail {0}
+      shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
     - name: Cache
       uses: actions/cache@v3.3.2
       with:
