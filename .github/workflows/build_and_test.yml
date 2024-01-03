@@ -192,7 +192,7 @@ jobs:
     - name: Create cache breaker
       run: |-
         cd "${{ github.workspace }}"
-        /usr/bin/make print-switch > $RUNNER_TEMP/opamcachebreaker
+        make print-switch > $RUNNER_TEMP/opamcachebreaker
         /usr/local/bin/opam --version >> $RUNNER_TEMP/opamcachebreaker
         /usr/bin/cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
         /usr/bin/cat flow_parser.opam >> $RUNNER_TEMP/opamcachebreaker
