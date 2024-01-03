@@ -191,12 +191,11 @@ jobs:
     - uses: "./.github/actions/install"
     - name: Create cache breaker
       run: |-
-        echo "RUNNER_TEMP = $RUNNER_TEMP"
-        /usr/bin/make print-switch > $RUNNER_TEMP/opamcachebreaker
-        /usr/local/bin/opam --version >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat flow_parser.opam >> $RUNNER_TEMP/opamcachebreaker
-        /usr/bin/cat .circleci/config.yml >> $RUNNER_TEMP/opamcachebreaker
+        /usr/bin/make print-switch > /cygdrive/d/a/_temp/opamcachebreaker
+        /usr/local/bin/opam --version >> /cygdrive/d/a/_temp/opamcachebreaker
+        /usr/bin/cat flowtype.opam >> /cygdrive/d/a/_temp/opamcachebreaker
+        /usr/bin/cat flow_parser.opam >> /cygdrive/d/a/_temp/opamcachebreaker
+        /usr/bin/cat .circleci/config.yml >> /cygdrive/d/a/_temp/opamcachebreaker
       shell: C:\tools\cygwin\bin\bash.exec -leo pipefail {0}
     - name: Cache
       uses: actions/cache@v3.3.2
