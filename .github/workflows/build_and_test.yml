@@ -303,16 +303,6 @@ jobs:
     - uses: actions/checkout@v3.6.0
     - name: Run tests
       run: "./runtests.sh bin/linux/flow | cat"
-  runtests_linux_arm64:
-    runs-on: ubuntu-20.04
-    needs:
-    - build_linux_arm64
-    env:
-      FLOW_RUNTESTS_PARALLELISM: 8
-    steps:
-    - uses: actions/checkout@v3.6.0
-    - name: Run tests
-      run: "./runtests.sh bin/linux-arm64/flow | cat"
   runtests_macos:
     runs-on: macos-latest
     needs:
