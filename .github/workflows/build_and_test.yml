@@ -192,11 +192,11 @@ jobs:
     - name: Create cache breaker
       run: |-
         cd "${{ github.workspace }}"
-        /usr/bin/make print-switch > /mnt/c/tmp/flow/opamcachebreaker
-        /usr/local/bin/opam --version >> /mnt/c/tmp/flow/opamcachebreaker
-        /usr/bin/cat flowtype.opam >> /mnt/c/tmp/flow/opamcachebreaker
-        /usr/bin/cat flow_parser.opam >> /mnt/c/tmp/flow/opamcachebreaker
-        /usr/bin/cat .circleci/config.yml >> /mnt/c/tmp/flow/opamcachebreaker
+        /usr/bin/make print-switch > $RUNNER_TEMP/opamcachebreaker
+        /usr/local/bin/opam --version >> $RUNNER_TEMP/opamcachebreaker
+        /usr/bin/cat flowtype.opam >> $RUNNER_TEMP/opamcachebreaker
+        /usr/bin/cat flow_parser.opam >> $RUNNER_TEMP/opamcachebreaker
+        /usr/bin/cat .circleci/config.yml >> $RUNNER_TEMP/opamcachebreaker
       shell: bash
     - name: Cache
       uses: actions/cache@v3.3.2
