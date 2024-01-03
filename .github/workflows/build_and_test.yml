@@ -192,7 +192,7 @@ jobs:
     - name: Cache
       uses: actions/cache@v3.3.2
       with:
-        key: opam-cache-{{ runner.os }}-{{ runner.arch }}-{{ hashfiles('flowtype.opam', 'flow_parser.opam', '.circleci/config.yml') }}
+        key: opam-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashfiles('flowtype.opam', 'flow_parser.opam', '.circleci/config.yml') }}
         path: |
           $Env:HOME/.opam
           _opam
