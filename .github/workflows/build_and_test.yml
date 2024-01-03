@@ -201,6 +201,8 @@ jobs:
       shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
     - name: Create opam switch
       run: |-
+        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+        cd "$GITHUB_WORKSPACE"
         /usr/bin/make deps
       shell: C:/tools/cygwin/bin/bash.exe -leo pipefail {0}
       working-directory: ${{ github.workspace }}
