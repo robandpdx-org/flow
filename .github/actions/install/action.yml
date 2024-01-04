@@ -6,6 +6,7 @@ runs:
   - name: Install dependencies
     run: |
       choco install --no-progress -y --source https://chocolatey.org/api/v2/ 7zip
+      setx /M PATH $($Env:PATH + ';C:\Program Files\7-Zip')
     shell: pwsh
   - name: Install cygwin
     uses: cygwin/cygwin-install-action@master
