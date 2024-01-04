@@ -417,7 +417,6 @@ jobs:
       run: |
         mkdir -p packages/flow-parser-bin/dist/release/
         cp dist/libflowparser-linux64.zip packages/flow-parser-bin/dist/release/libflowparser-linux64.zip
-        cp dist/libflowparser-linux-arm64.zip packages/flow-parser-bin/dist/release/libflowparser-linux-arm64.zip
         cp dist/libflowparser-osx.zip packages/flow-parser-bin/dist/release/libflowparser-osx.zip
         make dist/npm-flow-parser-bin.tgz
     - name: Pack flow-remove-types and flow-node
