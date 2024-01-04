@@ -175,10 +175,6 @@ jobs:
         path: |
           dist/flow-osx-arm64.zip
           dist/libflowparser-osx-arm64.zip
-    - uses: actions/upload-artifact@v3.1.3
-      with:
-        name: build_macos_arm64_src_parser_dist
-        path: src/parser/dist/libflowparser-osx-arm64.zip
   build_win:
     runs-on: windows-latest
     env:
@@ -410,10 +406,6 @@ jobs:
       with:
         name: build_macos_arm64_dist
         path: dist
-    - uses: actions/download-artifact@v3.0.2
-      with:
-        name: build_macos_arm64_src_parser_dist
-        path: src/parser/dist
     - name: Pack flow-parser
       run: |
         mkdir -p packages/flow-parser/dist/
