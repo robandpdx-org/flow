@@ -265,7 +265,7 @@ jobs:
         PATH: /usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0
     - name: Build flow.exe
       run: >-
-        cd "$(cygpath ${GITHUB_WORKSPACE})" ;
+        cd ${GITHUB_WORKSPACE} ;
         eval $(opam env) ;
         make bin/flow.exe dist/flow.zip ;
         mkdir -p bin/win64 && cp bin/flow.exe bin/win64/flow.exe ;
@@ -274,11 +274,12 @@ jobs:
       env:
         PATH: /usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0
     - name: Build parser test runner
-      run: |
-        eval $(opam env)
-        dune build src/parser/test/run_tests.exe
+      run: >-
+        cd ${GITHUB_WORKSPACE} ;
+        eval $(opam env) ;
+        dune build src/parser/test/run_tests.exe ;
         cp _build/default/src/parser/test/run_tests.exe bin/win64/run_parser_tests.exe
-      shell: C:\cygwin\bin\bash.exe '{0}'
+      shell: C:\cygwin\bin\bash.exe -leo pipefail '{0}'
       env:
         PATH: /usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0
     - uses: actions/upload-artifact@v3.1.3
