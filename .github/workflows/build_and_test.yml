@@ -436,7 +436,7 @@ jobs:
         path: bin
     - name: Test parser
       run: |-
-        ls -lr
+        Get-ChildItem -Recurse
         .\bin\win64\run_parser_tests.exe .\src\parser\test\flow\
         if ($LASTEXITCODE -gt 0) {
           Throw "flow parser hardcoded ocaml tests exited with error code: $LASTEXITCODE"
