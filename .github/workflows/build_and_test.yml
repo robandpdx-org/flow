@@ -285,15 +285,14 @@ jobs:
     - uses: actions/upload-artifact@v3.1.3
       with:
         name: build_win_bin
-        path: bin/win64/flow.exe
-          dist/flow-win64.zip
+        path: |
+          bin/win64/flow.exe
           bin/win64/run_parser_tests.exe
     - uses: actions/upload-artifact@v3.1.3
       with:
         name: build_win_dist
         path: |
           dist/flow-win64.zip
-          bin/win64/run_parser_tests.exe
   runtests_linux:
     runs-on: ubuntu-latest
     container:
