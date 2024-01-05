@@ -1,7 +1,0 @@
-name: create-opam-switch
-runs:
-  using: composite
-  steps:
-  - name: Install deps from opam
-    run: make deps
-    shell: bash

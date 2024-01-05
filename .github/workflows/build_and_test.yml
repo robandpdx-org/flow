@@ -32,14 +32,23 @@ jobs:
         OPAMYES: true
     steps:
     - uses: actions/checkout@v3.6.0
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Install extra deps from opam
       run: make deps-js
-    - uses: "./.github/actions/save-opam-cache"
     - name: Build flow.js
       run: opam exec -- make js
     - name: Build flow_parser.js
@@ -71,14 +80,23 @@ jobs:
         OPAMYES: true
     steps:
     - uses: actions/checkout@v3.6.0
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Install extra deps from opam
       run: make deps-js
-    - uses: "./.github/actions/save-opam-cache"
     - name: Build flow
       run: |-
         opam exec -- make bin/flow dist/flow.zip
@@ -111,12 +129,21 @@ jobs:
     - uses: "./.github/actions/install-opam-mac"
       with:
         arch: x86_64
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
-    - uses: "./.github/actions/save-opam-cache"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Build flow
       run: |-
         opam exec -- make bin/flow dist/flow.zip
@@ -149,12 +176,21 @@ jobs:
     - uses: "./.github/actions/install-opam-mac"
       with:
         arch: arm64
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
-    - uses: "./.github/actions/save-opam-cache"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Build flow
       run: |-
         opam exec -- make bin/flow dist/flow.zip
@@ -184,7 +220,33 @@ jobs:
     - uses: actions/checkout@v3.6.0
     - name: Set up workspace
       run: mkdir $Env:FLOW_TMP_DIR
-    - uses: "./.github/actions/install"
+    - name: Install dependencies
+      run: |
+        choco install --no-progress -y --source https://chocolatey.org/api/v2/ 7zip
+        setx /M PATH $($Env:PATH + ';C:\Program Files\7-Zip')
+      shell: pwsh
+    - name: Install cygwin
+      uses: cygwin/cygwin-install-action@master
+      with:
+        packages: >-
+          rsync
+          patch
+          diffutils
+          curl
+          make
+          zip
+          unzip
+          git
+          m4
+          perl
+          mingw64-x86_64-gcc-core
+          mingw64-x86_64-gcc-g++
+          mingw-w64-x86_64-gcc-libs
+          coreutils
+          moreutils
+    - name: Install opam
+      run: .\scripts\windows\install_opam.ps1
+      shell: pwsh
     - name: Cache
       uses: actions/cache@v3.3.2
       with:
@@ -202,11 +264,11 @@ jobs:
       env:
         PATH: /usr/local/bin:/usr/bin:/cygdrive/c/Windows/system32:/cygdrive/c/Windows:/cygdrive/c/Windows/System32/Wbem:/cygdrive/c/Windows/System32/WindowsPowerShell/v1.0
     - name: Build flow.exe
-      run: |
-        cd "$(cygpath ${GITHUB_WORKSPACE})"
-        eval $(opam env)
-        make bin/flow.exe dist/flow.zip
-        mkdir -p bin/win64 && cp bin/flow.exe bin/win64/flow.exe
+      run: >-
+        cd "$(cygpath ${GITHUB_WORKSPACE})" ;
+        eval $(opam env) ;
+        make bin/flow.exe dist/flow.zip ;
+        mkdir -p bin/win64 && cp bin/flow.exe bin/win64/flow.exe ;
         cp dist/flow.zip dist/flow-win64.zip
       shell: C:\cygwin\bin\bash.exe -leo pipefail '{0}'
       env:
@@ -308,11 +370,21 @@ jobs:
         OPAMYES: true
     steps:
     - uses: actions/checkout@v3.6.0
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Install extra deps from opam
       run: make deps-test | cat
     - name: Run ounit tests
@@ -332,11 +404,21 @@ jobs:
     - uses: "./.github/actions/install-opam-mac"
       with:
         arch: x86_64
-    - uses: "./.github/actions/make-opam-cachebreaker"
-    - uses: "./.github/actions/restore-opam-cache"
+    - name: Create cache breaker
+      run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+      shell: bash
+    - name: opam cache
+      uses: actions/cache@v3.3.2
+      with:
+        path: |-
+          ~/.opam
+          _opam
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
     - name: Init opam
-      run: ".circleci/opam_init.sh"
-    - uses: "./.github/actions/create-opam-switch"
+      run: .circleci/opam_init.sh
+    - name: Install deps from opam
+      run: make deps
+      shell: bash
     - name: Install extra deps from opam
       run: make deps-test | cat
     - name: Run ounit tests
