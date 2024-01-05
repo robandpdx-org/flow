@@ -347,8 +347,6 @@ jobs:
     - build_win
     steps:
     - uses: actions/checkout@v3.6.0
-    - name: Turn off nvm
-      run: nvm off
     - name: Install Node LTS
       run: choco install nodejs-lts -y
     - name: Enable Corepack
@@ -438,6 +436,7 @@ jobs:
         path: bin
     - name: Test parser
       run: |-
+        ls -lr
         .\bin\win64\run_parser_tests.exe .\src\parser\test\flow\
         if ($LASTEXITCODE -gt 0) {
           Throw "flow parser hardcoded ocaml tests exited with error code: $LASTEXITCODE"
