@@ -433,7 +433,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_win_bin
-        path: bin
+        path: bin/win64
     - name: Test parser
       run: |-
         Get-ChildItem -Recurse
