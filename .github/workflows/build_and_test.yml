@@ -439,27 +439,26 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/facebook/flow-website:latest
+      options: --user root
     needs:
     - build_linux
     - build_js
     steps:
     - uses: actions/checkout@v3.6.0
-    - name: restore_cache
+    - name: Node cache
       uses: actions/cache@v3.3.2
       with:
-        key: v2-node-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/yarn.lock" }}
+        key: v2-node-${{ runner.arch }}-${{ github.ref_name }}-${{ hashfiles('/etc/os-release', 'website/yarn.lock') }}
         path: website/node_modules
-        restore-keys: v2-node-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/yarn.lock" }}
     - name: Install yarn deps
       run: cd website && yarn install
     - name: Build website
       run: PATH=~/flow/bin/linux:$PATH .circleci/build_website.sh
-    - name: restore_cache
+    - name: Gem cache
       uses: actions/cache@v3.3.2
       with:
-        key: v2-gem-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/Gemfile.lock" }}
+        key: v2-gem-${{ runner.arch }}-${{ github.ref_name }}-${{ hashfiles('/etc/os-release', 'website/Gemfile.lock') }}
         path: UPDATE_ME
-        restore-keys: v2-gem-{{ arch }}-{{ .Branch }}-{{ checksum "/etc/os-release" }}-{{ checksum "website/Gemfile.lock" }}
     - name: Publish website to GitHub Pages
       run: |-
         cd website
@@ -476,6 +475,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_js_dist
         path: "~/flow"
     - name: Deploy to npm
       run: ".circleci/deploy_npm.sh"
@@ -489,6 +489,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_linux_dist
         path: "/flow"
     - name: Upload Linux binary
       run: .circleci/github_upload.sh dist/flow-linux64.zip "flow-linux64-${{ github.ref }}.zip"
@@ -504,6 +505,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_macos_dist
         path: "/flow"
     - name: Upload Mac binary
       run: .circleci/github_upload.sh dist/flow-osx.zip "flow-osx-${{ github.ref }}.zip"
@@ -519,6 +521,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_macos_arm64_dist
         path: "/flow"
     - name: Upload Mac binary
       run: .circleci/github_upload.sh dist/flow-osx-arm64.zip "flow-osx-arm64-${{ github.ref }}.zip"
@@ -534,6 +537,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_win_dist
         path: "/flow"
     - name: Upload Windows binary
       run: .circleci/github_upload.sh dist/flow-win64.zip "flow-win64-${{ github.ref }}.zip"
@@ -549,6 +553,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_linux_bin
         path: "~/flow"
     - name: Deploy flow-bin
       run: ".circleci/deploy_flow_bin.sh"
@@ -562,6 +567,7 @@ jobs:
     steps:
     - uses: actions/download-artifact@v3.0.2
       with:
+        name: build_js_bin
         path: "~/flow"
     - name: Assemble files
       run: |
