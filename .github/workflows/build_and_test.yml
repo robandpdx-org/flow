@@ -343,7 +343,7 @@ jobs:
     - name: Run tool tests
       run: "./tool test --bin bin/macos/flow | cat"
   tool_test_win:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     needs:
     - build_win
     steps:
@@ -428,11 +428,15 @@ jobs:
       with:
         path: test-results/ounit/
   parser_test_win:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     needs:
     - build_win
     steps:
     - uses: actions/checkout@v3.6.0
+    - uses: actions/download-artifact@v3.0.2
+      with:
+        name: build_win_bin
+        path: bin
     - name: Test parser
       run: |-
         .\bin\win64\run_parser_tests.exe .\src\parser\test\flow\
