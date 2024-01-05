@@ -41,7 +41,7 @@ jobs:
         path: |-
           ~/.opam
           _opam
-        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
       run: .circleci/opam_init.sh
     - name: Install deps from opam
@@ -89,7 +89,7 @@ jobs:
         path: |-
           ~/.opam
           _opam
-        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
       run: .circleci/opam_init.sh
     - name: Install deps from opam
@@ -126,7 +126,7 @@ jobs:
         xcode-version: '13.4'
     - name: Update curl cacerts
       run: echo "cacert $GITHUB_WORKSPACE/.circleci/cacert.pem" >> ~/.curlrc
-    - uses: "./.github/actions/install-opam-mac"
+    - uses: ./.github/actions/install-opam-mac
       with:
         arch: x86_64
     - name: Create cache breaker
@@ -138,7 +138,7 @@ jobs:
         path: |-
           ~/.opam
           _opam
-        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
       run: .circleci/opam_init.sh
     - name: Install deps from opam
@@ -173,7 +173,7 @@ jobs:
         xcode-version: 14.2.0
     - name: Update curl cacerts
       run: echo "cacert $GITHUB_WORKSPACE/.circleci/cacert.pem" >> ~/.curlrc
-    - uses: "./.github/actions/install-opam-mac"
+    - uses: ./.github/actions/install-opam-mac
       with:
         arch: arm64
     - name: Create cache breaker
@@ -185,7 +185,7 @@ jobs:
         path: |-
           ~/.opam
           _opam
-        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
       run: .circleci/opam_init.sh
     - name: Install deps from opam
@@ -304,7 +304,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3.6.0
     - name: Run tests
-      run: "./runtests.sh bin/linux/flow | cat"
+      run: ./runtests.sh bin/linux/flow | cat
   runtests_macos:
     runs-on: macos-latest
     needs:
@@ -315,7 +315,7 @@ jobs:
         xcode-version: '13.4'
     - uses: actions/checkout@v3.6.0
     - name: Run tests
-      run: "./runtests.sh bin/macos/flow | cat"
+      run: ./runtests.sh bin/macos/flow | cat
   tool_test_linux:
     runs-on: ubuntu-latest
     container:
@@ -325,9 +325,9 @@ jobs:
     steps:
     - uses: actions/checkout@v3.6.0
     - name: Install tool deps from yarn
-      run: "(cd packages/flow-dev-tools && yarn install | cat)"
+      run: (cd packages/flow-dev-tools && yarn install | cat)
     - name: Run tool tests
-      run: "./tool test -p 4 --bin bin/linux/flow | cat"
+      run: ./tool test -p 4 --bin bin/linux/flow | cat
   tool_test_macos:
     runs-on: macos-latest
     needs:
@@ -338,9 +338,9 @@ jobs:
         xcode-version: '13.4'
     - uses: actions/checkout@v3.6.0
     - name: Install tool deps from yarn
-      run: "(cd packages/flow-dev-tools && yarn install | cat)"
+      run: (cd packages/flow-dev-tools && yarn install | cat)
     - name: Run tool tests
-      run: "./tool test --bin bin/macos/flow | cat"
+      run: ./tool test --bin bin/macos/flow | cat
   tool_test_win:
     runs-on: windows-latest
     needs:
@@ -399,7 +399,7 @@ jobs:
         xcode-version: '13.4'
     - name: Update curl cacerts
       run: echo "cacert $GITHUB_WORKSPACE/.circleci/cacert.pem" >> ~/.curlrc
-    - uses: "./.github/actions/install-opam-mac"
+    - uses: ./.github/actions/install-opam-mac
       with:
         arch: x86_64
     - name: Create cache breaker
@@ -411,7 +411,7 @@ jobs:
         path: |-
           ~/.opam
           _opam
-        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}"
+        key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
     - name: Init opam
       run: .circleci/opam_init.sh
     - name: Install deps from opam
@@ -560,9 +560,9 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_js_dist
-        path: "~/flow"
+        path: dist
     - name: Deploy to npm
-      run: ".circleci/deploy_npm.sh"
+      run: .circleci/deploy_npm.sh
   github_linux:
     if: contains(github.event_name, 'push') && startsWith( github.ref, 'refs/tags/v.' )
     runs-on: ubuntu-latest
@@ -574,7 +574,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_linux_dist
-        path: "/flow"
+        path: dist
     - name: Upload Linux binary
       run: .circleci/github_upload.sh dist/flow-linux64.zip "flow-linux64-${{ github.ref }}.zip"
     - name: Upload Linux libflowparser
@@ -590,7 +590,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_macos_dist
-        path: "/flow"
+        path: dist
     - name: Upload Mac binary
       run: .circleci/github_upload.sh dist/flow-osx.zip "flow-osx-${{ github.ref }}.zip"
     - name: Upload Mac libflowparser
@@ -606,7 +606,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_macos_arm64_dist
-        path: "/flow"
+        path: /flow
     - name: Upload Mac binary
       run: .circleci/github_upload.sh dist/flow-osx-arm64.zip "flow-osx-arm64-${{ github.ref }}.zip"
     - name: Upload Mac libflowparser
@@ -622,7 +622,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_win_dist
-        path: "/flow"
+        path: dist
     - name: Upload Windows binary
       run: .circleci/github_upload.sh dist/flow-win64.zip "flow-win64-${{ github.ref }}.zip"
   flow_bin_deploy:
@@ -638,9 +638,9 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_linux_bin
-        path: "~/flow"
+        path: ~/flow
     - name: Deploy flow-bin
-      run: ".circleci/deploy_flow_bin.sh"
+      run: .circleci/deploy_flow_bin.sh
   try_flow_deploy:
     if: contains(github.event_name, 'push') && startsWith( github.ref, 'refs/tags/v.' )
     runs-on: ubuntu-latest
@@ -652,7 +652,7 @@ jobs:
     - uses: actions/download-artifact@v3.0.2
       with:
         name: build_js_bin
-        path: "~/flow"
+        path: ~/flow
     - name: Assemble files
       run: |
         cp bin/flow.js packages/try-flow-website-js/flow.js
