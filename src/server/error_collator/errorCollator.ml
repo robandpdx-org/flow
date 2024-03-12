@@ -134,6 +134,7 @@ let update_collated_errors ~reader ~options ~checked_files ~all_suppressions err
     collated_merge_errors;
     collated_warning_map;
     collated_suppressed_errors;
+    error_state_timestamps;
   } =
     acc
   in
@@ -167,6 +168,7 @@ let update_collated_errors ~reader ~options ~checked_files ~all_suppressions err
     collated_merge_errors;
     collated_warning_map;
     collated_suppressed_errors;
+    error_state_timestamps;
   }
 
 let get_with_separate_warnings env =
@@ -179,6 +181,7 @@ let get_with_separate_warnings env =
     collated_merge_errors;
     collated_warning_map;
     collated_suppressed_errors;
+    error_state_timestamps = _;
   } =
     collated_errors
   in
@@ -194,6 +197,166 @@ let get_with_separate_warnings env =
     FilenameMap.fold (fun _ -> List.rev_append) collated_suppressed_errors []
   in
   (collated_errorset, collated_warning_map, collated_suppressed_errors)
+
+let type_error_stat collated_errors =
+  let open Flow_errors_utils in
+  let {
+    collated_duplicate_providers_errors = _;
+    collated_local_errors = _;
+    collated_merge_errors;
+    collated_warning_map = _;
+    collated_suppressed_errors = _;
+    error_state_timestamps = _;
+  } =
+    collated_errors
+  in
+  let ( have_type_errors,
+        all_type_errors_in_one_file,
+        have_subtyping_errors,
+        all_subtyping_errors_in_one_file
+      ) =
+    FilenameMap.fold
+      (fun _
+           errors
+           ( have_type_errors_before,
+             all_errors_in_one_file,
+             have_subtyping_errors_before,
+             all_subtyping_errors_in_one_file
+           ) ->
+        let have_type_errors_in_file = not (ConcreteLocPrintableErrorSet.is_empty errors) in
+        let all_type_errors_in_one_file =
+          all_errors_in_one_file && not (have_type_errors_before && have_type_errors_in_file)
+        in
+        let have_subtyping_errors_in_file =
+          ConcreteLocPrintableErrorSet.exists
+            (fun error ->
+              match code_of_printable_error error with
+              | Some
+                  Error_codes.(
+                    ( IncompatibleCall | IncompatibleCast | IncompatibleExact | IncompatibleExtend
+                    | IncompatibleFunctionIndexer | IncompatibleIndexer | IncompatibleReturn
+                    | IncompatibleType | IncompatibleTypeArg | IncompatibleTypeGuard
+                    | IncompatibleUse | IncompatibleVariance | PropMissing )) ->
+                true
+              | _ -> false)
+            errors
+        in
+        let all_subtyping_errors_in_one_file =
+          all_subtyping_errors_in_one_file
+          && not (have_subtyping_errors_before && have_subtyping_errors_in_file)
+        in
+        ( have_type_errors_before || have_type_errors_in_file,
+          all_type_errors_in_one_file,
+          have_subtyping_errors_before || have_subtyping_errors_in_file,
+          all_subtyping_errors_in_one_file
+        ))
+      collated_merge_errors
+      (false, true, false, true)
+  in
+  let have_type_errors_and_all_in_one_file = have_type_errors && all_type_errors_in_one_file in
+  let have_subtyping_errors_and_all_in_one_file =
+    have_subtyping_errors && all_subtyping_errors_in_one_file
+  in
+  ( have_type_errors,
+    have_type_errors_and_all_in_one_file,
+    have_subtyping_errors,
+    have_subtyping_errors_and_all_in_one_file
+  )
+
+type error_resolution_stat = {
+  time_to_resolve_all_type_errors: float option;
+  time_to_resolve_all_type_errors_in_one_file: float option;
+  time_to_resolve_all_subtyping_errors: float option;
+  time_to_resolve_all_subtyping_errors_in_one_file: float option;
+}
+
+let update_error_state_timestamps collated_errors =
+  let current_time = Unix.gettimeofday () in
+  let init_timestamps = collated_errors.error_state_timestamps in
+  let ( have_type_errors,
+        have_type_errors_and_all_in_one_file,
+        have_subtyping_errors,
+        have_subtyping_errors_and_all_in_one_file
+      ) =
+    type_error_stat collated_errors
+  in
+  let timestamp_start_of_non_zero_type_errors =
+    if have_type_errors then
+      Base.Option.first_some
+        init_timestamps.timestamp_start_of_non_zero_type_errors
+        (Some current_time)
+    else
+      None
+  in
+  let timestamp_start_of_non_zero_type_errors_all_in_one_file =
+    if have_type_errors_and_all_in_one_file then
+      Base.Option.first_some
+        init_timestamps.timestamp_start_of_non_zero_type_errors_all_in_one_file
+        (Some current_time)
+    else
+      None
+  in
+  let timestamp_start_of_non_zero_subtyping_errors =
+    if have_subtyping_errors then
+      Base.Option.first_some
+        init_timestamps.timestamp_start_of_non_zero_subtyping_errors
+        (Some current_time)
+    else
+      None
+  in
+  let timestamp_start_of_non_zero_subtyping_errors_all_in_one_file =
+    if have_subtyping_errors_and_all_in_one_file then
+      Base.Option.first_some
+        init_timestamps.timestamp_start_of_non_zero_subtyping_errors_all_in_one_file
+        (Some current_time)
+    else
+      None
+  in
+  let time_to_resolve_errors init_error_time current_error_time =
+    match (init_error_time, current_error_time) with
+    (* If we start with no errors, then we are not resolving any errors.  *)
+    | (None, _) -> None
+    (* If we end with errors, then we are not fully resolving all errors. *)
+    | (_, Some _) -> None
+    | (Some t_start, None) -> Some (current_time -. t_start)
+  in
+  let time_to_resolve_all_type_errors =
+    time_to_resolve_errors
+      init_timestamps.timestamp_start_of_non_zero_type_errors
+      timestamp_start_of_non_zero_type_errors
+  in
+  let time_to_resolve_all_type_errors_in_one_file =
+    time_to_resolve_errors
+      init_timestamps.timestamp_start_of_non_zero_type_errors_all_in_one_file
+      timestamp_start_of_non_zero_type_errors
+  in
+  let time_to_resolve_all_subtyping_errors =
+    time_to_resolve_errors
+      init_timestamps.timestamp_start_of_non_zero_subtyping_errors
+      timestamp_start_of_non_zero_subtyping_errors
+  in
+  let time_to_resolve_all_subtyping_errors_in_one_file =
+    time_to_resolve_errors
+      init_timestamps.timestamp_start_of_non_zero_subtyping_errors_all_in_one_file
+      timestamp_start_of_non_zero_subtyping_errors
+  in
+  ( {
+      collated_errors with
+      Collated_errors.error_state_timestamps =
+        {
+          timestamp_start_of_non_zero_type_errors;
+          timestamp_start_of_non_zero_type_errors_all_in_one_file;
+          timestamp_start_of_non_zero_subtyping_errors;
+          timestamp_start_of_non_zero_subtyping_errors_all_in_one_file;
+        };
+    },
+    {
+      time_to_resolve_all_type_errors;
+      time_to_resolve_all_type_errors_in_one_file;
+      time_to_resolve_all_subtyping_errors;
+      time_to_resolve_all_subtyping_errors_in_one_file;
+    }
+  )
 
 (* combine error maps into a single error set and a single warning set *)
 let get env =

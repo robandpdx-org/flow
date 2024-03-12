@@ -988,6 +988,14 @@ module Peek = struct
        && ith_token ~i:1 env = T_FUNCTION
        && (loc env)._end.line = (ith_loc ~i:1 env).start.line
 
+  let is_hook env =
+    match token env with
+    | T_IDENTIFIER { raw = "hook"; _ } ->
+      (parse_options env).components
+      && ith_is_identifier ~i:1 env
+      && (loc env)._end.line = (ith_loc ~i:1 env).start.line
+    | _ -> false
+
   let is_class env =
     match token env with
     | T_CLASS

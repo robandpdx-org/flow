@@ -86,7 +86,7 @@ let main (module Runnable : Codemod_runner.RUNNABLE) codemod_flags () =
         Utils_js.FilenameSet.add
           (Files.filename_from_string
              ~options:file_options
-             ~consider_libdefs:(Options.libdef_in_checking options)
+             ~consider_libdefs:true
              ~libs:SSet.empty
              f
           )
@@ -159,6 +159,8 @@ module Annotate_exports_command = struct
 
       let check_options o = o
 
+      let expand_roots ~env:_ files = files
+
       let visit =
         let mapper = Annotate_exports.mapper ~preserve_literals ~max_type_size ~default_any in
         Codemod_utils.make_visitor (Codemod_utils.Mapper mapper)
@@ -192,6 +194,36 @@ module KeyMirror_command = struct
       let reporter = string_reporter (module Acc)
 
       let visit = Codemod_utils.make_visitor (Codemod_utils.Mapper Objmapi_to_keymirror.mapper)
+    end) in
+    main (module Runner) codemod_flags ()
+
+  let command = CommandSpec.command spec main
+end
+
+module RemoveReactImportCommand = struct
+  let doc = "Remove unnecessary imports of React under react.runtime=automatic."
+
+  let spec =
+    {
+      CommandSpec.name = "remove-unnecessary-react-import";
+      doc;
+      usage =
+        Printf.sprintf
+          "Usage: %s codemod remove-unnecessary-react-import [OPTION]... [FILE]\n\n%s\n"
+          Utils_js.exe_name
+          doc;
+      args = CommandSpec.ArgSpec.(empty |> CommandUtils.codemod_flags);
+    }
+
+  let main codemod_flags () =
+    let module Runner = Codemod_runner.MakeUntypedRunner (struct
+      module Acc = Remove_react_import.Acc
+
+      type accumulator = Acc.t
+
+      let reporter = string_reporter (module Acc)
+
+      let visit = Codemod_utils.make_visitor (Codemod_utils.Mapper Remove_react_import.mapper)
     end) in
     main (module Runner) codemod_flags ()
 
@@ -233,6 +265,8 @@ module Annotate_optional_properties_command = struct
 
       let reporter = string_reporter (module Acc)
 
+      let expand_roots ~env:_ files = files
+
       let check_options o = o
 
       let visit =
@@ -258,6 +292,7 @@ let command =
           Annotate_optional_properties_command.command
         );
         (KeyMirror_command.spec.CommandSpec.name, KeyMirror_command.command);
+        (RemoveReactImportCommand.spec.CommandSpec.name, RemoveReactImportCommand.command);
       ]
   in
   CommandSpec.command spec main

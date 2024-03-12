@@ -22,6 +22,7 @@ type options = {
   module_resource_exts: SSet.t;
   multi_platform: bool;
   multi_platform_extensions: string list;
+  multi_platform_ambient_supports_platform_directory_overrides: (string * string list) list;
   node_resolver_dirnames: string list;
 }
 
@@ -37,6 +38,7 @@ let default_options =
     module_resource_exts = SSet.empty;
     multi_platform = false;
     multi_platform_extensions = [];
+    multi_platform_ambient_supports_platform_directory_overrides = [];
     node_resolver_dirnames = ["node_modules"];
   }
 
@@ -104,7 +106,7 @@ let relative_interface_mref_of_possibly_platform_specific_file ~options file =
                 let base =
                   File_key.chop_suffix file platform_ext |> File_key.to_string |> Filename.basename
                 in
-                Some ("./" ^ base)
+                Some ("./" ^ base ^ ".js")
               else
                 None
           )
@@ -471,12 +473,18 @@ let init ?(flowlibs_only = false) (options : options) =
     match options.default_lib_dir with
     | None -> (libs, is_valid_path ~options)
     | Some libdir ->
-      let root =
+      let root_str =
         match libdir with
         | Prelude path
         | Flowlib path ->
-          path
+          File_path.to_string path
       in
+      (* At the time when the config is first created, the flowlibs might be extracted if the
+       * user has run `flow` before, or not extracted otherwise.
+       * When the flowlibs are already extracted, the root path here will be absolute. Otherwise,
+       * it will remain relative. This inconsistency can be dangerous, so we normalize everything
+       * to absolute path here, since at this point, the flowlibs have definitely been extracted. *)
+      let root = File_path.make root_str in
       let is_in_flowlib = is_prefix (File_path.to_string root) in
       let is_valid_path = is_valid_path ~options in
       let filter path = is_in_flowlib path || is_valid_path path in

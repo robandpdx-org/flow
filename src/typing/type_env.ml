@@ -11,6 +11,8 @@ open Reason
 open Loc_collections
 module EnvMap = Env_api.EnvMap
 
+let ( +> ) f g x = g (f x)
+
 module LookupMode = struct
   type t =
     | ForValue
@@ -19,14 +21,6 @@ module LookupMode = struct
 end
 
 open LookupMode
-
-let get_global_value_type cx name reason =
-  match Context.global_value_cache_find_opt cx name with
-  | Some t -> t
-  | None ->
-    let t = Flow_js.get_builtin_result cx name reason in
-    Context.add_global_value_cache_entry cx name t;
-    t
 
 let get_class_entries cx =
   let { Loc_env.class_stack; class_bindings; _ } = Context.environment cx in
@@ -116,42 +110,32 @@ let t_option_value_exn cx loc t =
 (* Helpers **************)
 (************************)
 
-let enforced_env_read_error_opt cx kind loc =
+let checked_find_loc_env_write_opt cx kind loc =
   let ({ Loc_env.under_resolution; var_info; _ } as env) = Context.environment cx in
-  match EnvMap.find_opt (kind, loc) var_info.Env_api.env_entries with
-  | Some Env_api.NonAssigningWrite -> None
-  | _ ->
-    (match Loc_env.find_write env kind loc with
-    | None -> Some Error_message.(EInternal (loc, MissingEnvWrite loc))
-    | Some (OpenT (_, id)) ->
-      if not (Loc_env.is_readable env kind loc) then
-        Some Error_message.(EInternal (loc, ReadOfUnreachedTvar kind))
-      else if not (Env_api.EnvSet.mem (kind, loc) under_resolution) then
-        match Context.find_graph cx id with
-        | Type.Constraint.FullyResolved _ -> None
-        | _ -> Some Error_message.(EInternal (loc, ReadOfUnresolvedTvar kind))
-      else
-        None
-    | Some t -> assert_false ("Expect only OpenTs in env, instead we have " ^ Debug_js.dump_t cx t))
-
-let check_readable cx kind loc =
-  enforced_env_read_error_opt cx kind loc |> Base.Option.iter ~f:(Flow_js_utils.add_output cx)
+  match
+    (EnvMap.find_opt (kind, loc) var_info.Env_api.env_entries, Loc_env.find_write env kind loc)
+  with
+  | (Some Env_api.NonAssigningWrite, t_opt) -> t_opt
+  | (_, None) ->
+    Flow_js_utils.add_output cx Error_message.(EInternal (loc, MissingEnvWrite loc));
+    None
+  | (_, Some (OpenT (_, id) as t)) ->
+    if not (Loc_env.is_readable env kind loc) then (
+      Flow_js_utils.add_output cx Error_message.(EInternal (loc, ReadOfUnreachedTvar kind));
+      Some t
+    ) else if not (Env_api.EnvSet.mem (kind, loc) under_resolution) then (
+      match Context.find_graph cx id with
+      | Type.Constraint.FullyResolved _ -> Some t
+      | _ ->
+        Flow_js_utils.add_output cx Error_message.(EInternal (loc, ReadOfUnresolvedTvar kind));
+        Some t
+    ) else
+      Some t
+  | (_, Some t) ->
+    assert_false ("Expect only OpenTs in env, instead we have " ^ Debug_js.dump_t cx t)
 
 let checked_find_loc_env_write cx kind loc =
-  let get_t () =
-    let env = Context.environment cx in
-    t_option_value_exn cx loc (Loc_env.find_write env kind loc)
-  in
-  enforced_env_read_error_opt cx kind loc |> Base.Option.iter ~f:(Flow_js_utils.add_output cx);
-  get_t ()
-
-let checked_find_loc_env_write_opt cx kind loc =
-  let get_t () =
-    let env = Context.environment cx in
-    Loc_env.find_write env kind loc
-  in
-  enforced_env_read_error_opt cx kind loc |> Base.Option.iter ~f:(Flow_js_utils.add_output cx);
-  get_t ()
+  checked_find_loc_env_write_opt cx kind loc |> t_option_value_exn cx loc
 
 let find_var_opt { Env_api.env_values; _ } loc =
   match ALocMap.find_opt loc env_values with
@@ -234,16 +218,101 @@ let phi cx reason ts =
             Nel.to_list errs)
         ts
     in
+    Tvar_resolver.resolve cx tvar;
     (match errs with
     | [] -> Ok tvar
     | hd :: tl -> Error (tvar, (hd, tl)))
 
-let rec predicate_of_refinement cx =
-  Env_api.Refi.(
-    function
-    | AndR (r1, r2) -> AndP (predicate_of_refinement cx r1, predicate_of_refinement cx r2)
-    | OrR (r1, r2) -> OrP (predicate_of_refinement cx r1, predicate_of_refinement cx r2)
-    | NotR r -> NotP (predicate_of_refinement cx r)
+let read_pred_func_info_exn cx loc =
+  let f () = ALocMap.find loc (Context.environment cx).Loc_env.pred_func_map in
+  let error () = lazy (unknown_use, loc, AnyT.at (AnyError None) loc, None, []) in
+  with_debug_exn_error cx loc ~f ~error
+
+(* Returns [true] iff the input type is potentially a predicate function. *)
+let maybe_predicate_function =
+  let simplify_callee cx func_t =
+    let errors = Context.errors cx in
+    let result =
+      Context.run_and_rolled_back_cache cx (fun () ->
+          let reason = TypeUtil.reason_of_t func_t in
+          Tvar.mk_no_wrap_where cx reason (fun t ->
+              let u =
+                CallT
+                  {
+                    use_op = unknown_use;
+                    reason;
+                    call_action = ConcretizeCallee t;
+                    return_hint = hint_unavailable;
+                  }
+              in
+              Flow_js.flow cx (func_t, u)
+          )
+      )
+    in
+    Context.reset_errors cx errors;
+    result
+  in
+  let on_ground t =
+    match t with
+    | AnyT _ -> false
+    | DefT (_, FunT (_, { predicate; _ }))
+    | DefT (_, PolyT { t_out = DefT (_, FunT (_, { predicate; _ })); _ }) ->
+      Base.Option.is_some predicate
+    | DefT _ -> false
+    | _ -> true (* yes: safe option *)
+  in
+  let rec on_non_inter cx t =
+    match t with
+    | DefT _ -> on_ground t
+    | _ ->
+      t
+      |> simplify_callee cx
+      |> Context.find_resolved cx
+      |> Base.Option.value_map ~f:on_ground ~default:true
+  and on_concrete cx t =
+    match t with
+    | IntersectionT (_, rep) -> rep |> InterRep.members |> Base.List.exists ~f:(on_t cx)
+    | t -> on_non_inter cx t
+  and on_t cx t =
+    let reason = TypeUtil.reason_of_t t in
+    let ts = Flow_js.possible_concrete_types_for_inspection cx reason t in
+    Base.List.exists ~f:(on_concrete cx) ts
+  in
+  on_t
+
+let simplify_nop_pred =
+  let rec loop p =
+    match p with
+    | AndP (p1, p2) ->
+      let p1' = loop p1 in
+      let p2' = loop p2 in
+      begin
+        match (p1', p2') with
+        | (NoP, NoP) -> NoP
+        | (NoP, _) -> p2'
+        | (_, NoP) -> p1'
+        | _ -> p
+      end
+    | OrP (p1, p2) ->
+      let p1' = loop p1 in
+      let p2' = loop p2 in
+      begin
+        match (p1', p2') with
+        | (NoP, NoP) -> NoP
+        | (NoP, _) -> NoP
+        | (_, NoP) -> NoP
+        | _ -> p
+      end
+    | _ -> p
+  in
+  loop
+
+let predicate_of_refinement cx =
+  let open Env_api.Refi in
+  let rec pred = function
+    | AndR (r1, r2) -> AndP (pred r1, pred r2)
+    | OrR (r1, r2) -> OrP (pred r1, pred r2)
+    | NotR r -> NotP (pred r)
     | TruthyR -> ExistsP
     | NullR -> NullP
     | UndefinedR -> VoidP
@@ -278,23 +347,32 @@ let rec predicate_of_refinement cx =
       let other_t = checked_find_loc_env_write cx Env_api.ExpressionLoc loc in
       LeftP (SentinelProp prop, other_t)
     | LatentR { func = (func_loc, _); index; _ } ->
-      let call_info = read_pred_func_info_exn cx func_loc in
-      LatentP (call_info, index)
+      let (lazy (_, _, t, _, _)) =
+        ALocMap.find func_loc (Context.environment cx).Loc_env.pred_func_map
+      in
+      if maybe_predicate_function cx t then
+        LatentP (read_pred_func_info_exn cx func_loc, index)
+      else
+        NoP
     | PropNullishR { propname; loc } ->
       NotP (PropNonMaybeP (propname, mk_reason (RProperty (Some (OrdinaryName propname))) loc))
     | PropExistsR { propname; loc } ->
       PropExistsP (propname, mk_reason (RProperty (Some (OrdinaryName propname))) loc)
-  )
+  in
+  pred +> simplify_nop_pred
 
-and refine cx reason loc refi res =
+let refine cx reason loc refi res =
   Base.Option.value_map
     ~f:(fun predicate ->
       let map_t t =
         let predicate = predicate |> snd |> predicate_of_refinement cx in
         let reason = mk_reason (RRefined (desc_of_reason reason)) loc in
-        Tvar.mk_no_wrap_where cx reason (fun tvar ->
-            Flow_js.flow cx (t, PredicateT (predicate, tvar))
-        )
+        match predicate with
+        | NoP -> t
+        | _ ->
+          Tvar.mk_no_wrap_where cx reason (fun tvar ->
+              Flow_js.flow cx (t, PredicateT (predicate, tvar))
+          )
       in
       match res with
       | Ok t -> Ok (map_t t)
@@ -302,7 +380,7 @@ and refine cx reason loc refi res =
     ~default:res
     refi
 
-and res_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
+let res_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
   let { Loc_env.var_info; _ } = env in
   let find_write_exn kind reason =
     let loc = Reason.loc_of_reason reason in
@@ -354,8 +432,10 @@ and res_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
                Ok Type.(AnyT.make (AnyError None) reason)
              | (Env_api.With_ALoc.Refinement { refinement_id; writes; write_id }, _) ->
                find_refi var_info refinement_id |> Base.Option.some |> res_of_state writes write_id
-             | (Env_api.With_ALoc.Global name, _) ->
-               get_global_value_type cx (Reason.OrdinaryName name) reason
+             | (Env_api.With_ALoc.Global name, (ForValue | ForTypeof)) ->
+               Flow_js_utils.lookup_builtin_value_result cx name reason
+             | (Env_api.With_ALoc.Global name, ForType) ->
+               Flow_js_utils.lookup_builtin_type_result cx name reason
              | (Env_api.With_ALoc.GlobalThis reason, _) -> Ok (ObjProtoT reason)
              | (Env_api.With_ALoc.IllegalThis reason, _) ->
                Debug_js.Verbose.print_if_verbose
@@ -452,38 +532,41 @@ and res_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
   in
   res_of_state write_locs val_id refi
 
-and type_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
+let type_of_state ~lookup_mode cx env loc reason write_locs val_id refi =
   res_of_state ~lookup_mode cx env loc reason write_locs val_id refi
   |> Flow_js_utils.apply_env_errors cx loc
 
-and read_entry ~lookup_mode cx loc reason =
+let read_entry ~lookup_mode cx loc reason =
   let ({ Loc_env.var_info; _ } as env) = Context.environment cx in
   match find_var_opt var_info loc with
   | Error loc -> Error loc
   | Ok { Env_api.def_loc; write_locs; val_kind; name; id } ->
     (match (val_kind, name, def_loc, lookup_mode) with
-    | (Some (Env_api.Type { imported }), Some name, Some def_loc, (ForValue | ForTypeof)) ->
+    | ( Some (Env_api.Type { imported; type_only_namespace }),
+        Some name,
+        Some def_loc,
+        (ForValue | ForTypeof)
+      ) ->
       Flow_js.add_output
         cx
         (Error_message.EBindingError
-           (Error_message.ETypeInValuePosition { imported; name }, loc, OrdinaryName name, def_loc)
+           ( Error_message.ETypeInValuePosition { imported; type_only_namespace; name },
+             loc,
+             OrdinaryName name,
+             def_loc
+           )
         );
       Ok (AnyT.at (AnyError None) loc)
     | _ -> Ok (type_of_state ~lookup_mode cx env loc reason write_locs id None))
 
-and read_entry_exn ~lookup_mode cx loc reason =
+let read_entry_exn ~lookup_mode cx loc reason =
   with_debug_exn cx loc (fun () ->
       match read_entry ~lookup_mode cx loc reason with
       | Error loc -> failwith (Utils_js.spf "LocEnvEntryNotFound %s" (Reason.string_of_aloc loc))
       | Ok x -> x
   )
 
-and read_pred_func_info_exn cx loc =
-  let f () = ALocMap.find loc (Context.environment cx).Loc_env.pred_func_map in
-  let error () = lazy (unknown_use, loc, AnyT.at (AnyError None) loc, None, []) in
-  with_debug_exn_error cx loc ~f ~error
-
-and predicate_refinement_maps cx loc =
+let predicate_refinement_maps cx loc =
   let { Loc_env.var_info; _ } = Context.environment cx in
   let { Env_api.predicate_refinement_maps; _ } = var_info in
   let read_to_predicate ({ Env_api.write_locs; _ }, _, _) =
@@ -511,9 +594,9 @@ and predicate_refinement_maps cx loc =
   match ALocMap.find_opt loc predicate_refinement_maps with
   | None -> None
   | Some (expr_reason, p_map, n_map) ->
-    Some (expr_reason, to_predicate_key_map p_map, to_predicate_key_map n_map)
+    Some (expr_reason, lazy (to_predicate_key_map p_map, to_predicate_key_map n_map))
 
-and type_guard_at_return cx reason ~param_loc ~return_loc write_locs =
+let type_guard_at_return cx reason ~param_loc ~return_loc write_locs =
   let rec is_invalid (acc_result, acc_locs) write_loc =
     match write_loc with
     | Env_api.Write reason when ALoc.equal (Reason.loc_of_reason reason) param_loc ->
@@ -544,11 +627,7 @@ let find_write cx kind reason =
   let loc = Reason.loc_of_reason reason in
   match checked_find_loc_env_write_opt cx kind loc with
   | Some t -> t
-  | None -> Tvar.mk cx reason
-
-let get_module_exports cx loc =
-  let env = Context.environment cx in
-  t_option_value_exn cx loc (Loc_env.find_write env Env_api.CJSModuleExportsLoc loc)
+  | None -> AnyT.error reason
 
 let get_refinement cx key loc =
   let reason = mk_reason (Key.reason_desc key) loc in
@@ -582,7 +661,7 @@ let intrinsic_ref cx ?desc name loc =
     | Error loc -> Error loc
     | Ok { Env_api.def_loc; write_locs; val_kind; name; id } ->
       (match (val_kind, name, def_loc) with
-      | (Some (Env_api.Type { imported = _ }), Some _, Some _)
+      | (Some (Env_api.Type { imported = _; type_only_namespace = _ }), Some _, Some _)
       | (_, _, None) ->
         Error loc
       | (_, _, Some def_loc) ->
@@ -643,18 +722,6 @@ let constraining_type ~default cx loc =
 (*  Writing  *)
 (*************)
 
-(* Unifies `t` with the entry in the loc_env's map. This allows it to be looked up for Write
- * entries reported by the name_resolver as well as providers for the provider analysis *)
-let unify_write_entry cx ~use_op t def_loc_type loc =
-  Debug_js.Verbose.print_if_verbose
-    cx
-    [spf "writing to %s %s" (Env_api.show_def_loc_type def_loc_type) (Reason.string_of_aloc loc)];
-  match checked_find_loc_env_write_opt cx def_loc_type loc with
-  | None ->
-    (* If we don't see a spot for this write, it's because it's never read from. *)
-    ()
-  | Some w -> Flow_js.unify cx ~use_op w t
-
 (* Subtypes the given type against the providers for a def loc. Should be used on assignments to
  * non-import value bindings *)
 let subtype_against_providers cx ~use_op ?potential_global_name t loc =
@@ -674,12 +741,14 @@ let subtype_against_providers cx ~use_op ?potential_global_name t loc =
   | Some (Env_api.GlobalWrite _) ->
     if is_provider cx loc then
       Base.Option.iter potential_global_name ~f:(fun name ->
-          let name = Reason.OrdinaryName name in
-          let (_ : Type.t) =
-            get_global_value_type cx name (mk_reason (RIdentifier name) loc)
-            |> Flow_js_utils.apply_env_errors cx loc
-          in
-          ()
+          if Base.Option.is_none (Flow_js_utils.lookup_builtin_value_opt cx name) then
+            let name = OrdinaryName name in
+            Flow_js_utils.add_output
+              cx
+              Error_message.(
+                EBuiltinLookupFailed
+                  { reason = mk_reason (RIdentifier name) loc; potential_generator = None; name }
+              )
       )
   | _ ->
     if not (is_provider cx loc) then
@@ -711,18 +780,25 @@ let subtype_against_providers cx ~use_op ?potential_global_name t loc =
               )
           | None -> use_op
         in
-        Context.add_constrained_write cx (t, use_op, general)
+        Context.add_post_inference_subtyping_check cx t use_op general
 
+(* Resolve `t` with the entry in the loc_env's map. This allows it to be looked up for Write
+ * entries reported by the name_resolver as well as providers for the provider analysis *)
 let resolve_env_entry ~use_op ~update_reason cx t kind loc =
-  unify_write_entry cx ~use_op t kind loc;
-  let env = Context.environment cx in
-  let env =
-    if update_reason then
-      Loc_env.update_reason env kind loc (TypeUtil.reason_of_t t)
-    else
-      env
-  in
-  Context.set_environment cx env
+  Debug_js.Verbose.print_if_verbose
+    cx
+    [spf "writing to %s %s" (Env_api.show_def_loc_type kind) (Reason.string_of_aloc loc)];
+  (match checked_find_loc_env_write_opt cx kind loc with
+  | None ->
+    (* If we don't see a spot for this write, it's because it's never read from. *)
+    ()
+  | Some w -> Flow_js.unify cx ~use_op w t);
+  if update_reason then
+    let env = Context.environment cx in
+    let env = Loc_env.update_reason env kind loc (TypeUtil.reason_of_t t) in
+    Context.set_environment cx env
+  else
+    ()
 
 let subtype_entry cx ~use_op t loc =
   let env = Context.environment cx in
@@ -747,30 +823,27 @@ let init_entry cx ~use_op t loc =
 let set_var cx ~use_op name t loc =
   subtype_against_providers cx ~use_op ~potential_global_name:name t loc
 
-let set_module_exports cx t =
-  let env = Context.environment cx in
-  Base.Option.iter
-    env.Loc_env.declare_module_exports_write_loc
-    ~f:(unify_write_entry cx ~use_op:unknown_use t Env_api.CJSModuleExportsLoc)
-
 let bind_function_param cx t loc =
-  unify_write_entry cx ~use_op:Type.unknown_use t Env_api.FunctionParamLoc loc
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.FunctionParamLoc loc
 
 let bind_function_this cx t loc =
   if Context.typing_mode cx = Context.CheckingMode then
-    unify_write_entry cx ~use_op:Type.unknown_use t Env_api.FunctionThisLoc loc
+    resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.FunctionThisLoc loc
 
 let bind_class_instance_this cx t loc =
-  unify_write_entry cx ~use_op:Type.unknown_use t Env_api.ClassInstanceThisLoc loc
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.ClassInstanceThisLoc loc
 
 let bind_class_static_this cx t loc =
-  unify_write_entry cx ~use_op:Type.unknown_use t Env_api.ClassStaticThisLoc loc
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.ClassStaticThisLoc loc
 
 let bind_class_instance_super cx t loc =
-  unify_write_entry cx ~use_op:Type.unknown_use t Env_api.ClassInstanceSuperLoc loc
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.ClassInstanceSuperLoc loc
 
 let bind_class_static_super cx t loc =
-  unify_write_entry cx ~use_op:Type.unknown_use t Env_api.ClassStaticSuperLoc loc
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.ClassStaticSuperLoc loc
+
+let bind_class_self_type cx t loc =
+  resolve_env_entry cx ~use_op:unknown_use ~update_reason:false t Env_api.ClassSelfLoc loc
 
 let init_var cx ~use_op t loc = init_entry cx ~use_op t loc
 
@@ -783,9 +856,9 @@ let init_const cx ~use_op t loc = init_entry cx ~use_op t loc
 let init_implicit_const cx ~use_op t loc = init_entry cx ~use_op t loc
 
 let read_declared_type cx reason loc =
-  Tvar.mk_where cx reason (fun t ->
-      unify_write_entry cx ~use_op:unknown_use t Env_api.OrdinaryNameLoc loc
-  )
+  match checked_find_loc_env_write_opt cx Env_api.OrdinaryNameLoc loc with
+  | Some t -> t
+  | None -> EmptyT.make reason
 
 (************************)
 (* Variable Declaration *)

@@ -1,0 +1,8 @@
+[options]
+component_syntax=true
+experimental.component_syntax.hooklike_functions=false
+all=true
+no_flowlib=false
+
+[lints]
+nested-component=error

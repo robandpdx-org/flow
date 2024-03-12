@@ -39,6 +39,12 @@ val is_call_to_object_static_method : ('a, 'b) Flow_ast.Expression.t -> bool
 
 val is_super_member_access : ('a, 'b) Flow_ast.Expression.Member.t -> bool
 
+(* Returns Ok () for such statement, and Error kind_of_statement otherwise. *)
+val acceptable_statement_in_declaration_context :
+  in_declare_namespace:bool -> ('a, 'b) Flow_ast.Statement.t' -> (unit, string) result
+
+val is_type_only_declaration_statement : ('a, 'b) Flow_ast.Statement.t -> bool
+
 val negate_number_literal : float * string -> float * string
 
 val negate_bigint_literal : int64 option * string -> int64 option * string
@@ -113,6 +119,7 @@ module ExpressionSort : sig
     | Object
     | OptionalCall
     | OptionalMember
+    | Satisfies
     | Sequence
     | Super
     | TaggedTemplate
@@ -140,4 +147,6 @@ val push_toplevel_type :
 
 val hook_function : ('a, 'b) Flow_ast.Function.t -> 'b option
 
-val hook_call : ('loc, 'loc) Flow_ast.Expression.Call.t -> bool
+val hook_call : ('a, 'b) Flow_ast.Expression.Call.t -> bool
+
+val hook_name : string -> bool

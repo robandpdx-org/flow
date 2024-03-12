@@ -109,6 +109,13 @@ type ('loc, 'a) fun_rest_param =
     }
 [@@deriving iter, map, show { with_path = false }]
 
+type 'loc react_hook =
+  | HookDecl of 'loc
+  | HookAnnot
+  | NonHook
+  | AnyHook
+[@@deriving iter, map, show { with_path = false }]
+
 type ('loc, 'a) fun_sig =
   | FunSig of {
       tparams: ('loc, 'a) tparams;
@@ -117,6 +124,7 @@ type ('loc, 'a) fun_sig =
       this_param: 'a option;
       return: 'a;
       predicate: ('loc, 'a) predicate_or_type_guard option;
+      hook: 'loc react_hook;
     }
 [@@deriving iter, map, show { with_path = false }]
 
@@ -367,6 +375,12 @@ type ('loc, 'a) def =
       id_loc: 'loc;
       name: string;
     }
+  | NamespaceBinding of {
+      id_loc: 'loc;
+      name: string;
+      values: ('loc * 'a) smap;
+      types: ('loc * 'a) smap;
+    }
 [@@deriving iter, map, show { with_path = false }]
 
 (* These accessors will compile to code that does not have a branch because
@@ -385,6 +399,7 @@ let def_id_loc = function
     id_loc
   | EnumBinding { id_loc; _ } -> id_loc
   | DisabledEnumBinding { id_loc; _ } -> id_loc
+  | NamespaceBinding { id_loc; _ } -> id_loc
 
 let def_name = function
   | TypeAlias { name; _ }
@@ -400,6 +415,7 @@ let def_name = function
     name
   | EnumBinding { name; _ } -> name
   | DisabledEnumBinding { name; _ } -> name
+  | NamespaceBinding { name; _ } -> name
 
 (* The signature extractor relies heavily on annotations, but will extract
  * signatures corresponding to some literal expressions as well. The
@@ -442,6 +458,7 @@ type ('loc, 'a) value =
       elems_rev: ('loc, 'a) obj_value_spread_elem Nel.t;
     }
   | ArrayLit of 'loc * 'a * 'a tailrec_list
+  | AsConst of ('loc, 'a) value
 [@@deriving iter, map, show { with_path = false }]
 
 type 'a obj_kind =
@@ -496,14 +513,13 @@ type ('loc, 'a) annot =
       ref_loc: 'loc;
       name: string;
     }
+  | NoInfer of 'a
   | TEMPORARY_Number of 'loc * float * string
   | TEMPORARY_String of 'loc * string
   | TEMPORARY_LongString of 'loc
   | TEMPORARY_Boolean of 'loc * bool
   | TEMPORARY_Object of 'a
   | TEMPORARY_Array of 'loc * 'a
-  | AnyWithLowerBound of 'loc * 'a
-  | AnyWithUpperBound of 'loc * 'a
   | PropertyType of {
       loc: 'loc;
       obj: 'a;

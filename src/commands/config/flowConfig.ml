@@ -45,20 +45,21 @@ module Opts = struct
   type t = {
     all: bool option;
     autoimports: bool option;
+    autoimports_min_characters: int option;
     autoimports_ranked_by_usage: bool option;
     autoimports_ranked_by_usage_boost_exact_match_min_length: int option;
     automatic_require_default: bool option;
     babel_loose_array_spread: bool option;
-    batch_lsp_request_processing: bool;
+    blocking_worker_communication: bool;
     casting_syntax: Options.CastingSyntax.t option;
     channel_mode: [ `pipe | `socket ] option;
-    component_syntax: Options.component_syntax;
-    component_syntax_includes: string list;
+    component_syntax: bool;
+    hooklike_functions: bool;
+    hooklike_functions_includes: string list;
     react_rules: Options.react_rules list;
-    direct_dependent_files_fix: bool option;
     emoji: bool option;
+    enable_as_const: bool option;
     enable_const_params: bool option;
-    enforce_strict_call_arity: bool;
     enums: bool;
     estimate_recheck_time: bool option;
     exact_by_default: bool option;
@@ -90,7 +91,6 @@ module Opts = struct
     ignore_non_literal_requires: bool;
     include_warnings: bool;
     lazy_mode: lazy_mode option;
-    libdef_in_checking: bool;
     log_saving: Options.log_saving SMap.t;
     long_lived_workers: bool;
     max_files_checked_per_worker: int;
@@ -107,21 +107,21 @@ module Opts = struct
     modules_are_use_strict: bool;
     multi_platform: bool option;
     multi_platform_extensions: string list;
+    multi_platform_ambient_supports_platform_directory_overrides: (string * string list) list;
     munge_underscores: bool;
+    namespaces: bool;
     no_flowlib: bool;
     node_main_fields: string list;
     node_resolver_allow_root_relative: bool;
     node_resolver_dirnames: string list;
     node_resolver_root_relative_dirnames: string list;
-    precise_dependents: bool;
     react_runtime: Options.react_runtime;
     recursion_limit: int;
     relay_integration: bool;
+    relay_integration_esmodules: bool;
     relay_integration_excludes: string list;
     relay_integration_module_prefix: string option;
     relay_integration_module_prefix_includes: string list;
-    renders_type_validation: bool;
-    renders_type_validation_includes: string list;
     root_name: string option;
     saved_state_allow_reinit: bool option;
     saved_state_fetcher: Options.saved_state_fetcher;
@@ -131,6 +131,7 @@ module Opts = struct
     strict_es6_import_export_excludes: string list;
     suppress_types: SSet.t;
     traces: int;
+    ts_syntax: bool;
     use_mixed_in_catch_variables: bool option;
     wait_for_recheck: bool;
     watchman_defer_states: string list;
@@ -172,20 +173,21 @@ module Opts = struct
     {
       all = None;
       autoimports = None;
+      autoimports_min_characters = None;
       autoimports_ranked_by_usage = None;
       autoimports_ranked_by_usage_boost_exact_match_min_length = None;
       automatic_require_default = None;
       babel_loose_array_spread = None;
-      batch_lsp_request_processing = true;
+      blocking_worker_communication = false;
       channel_mode = None;
       casting_syntax = None;
-      component_syntax = Options.Parsing;
-      component_syntax_includes = [];
+      component_syntax = false;
+      hooklike_functions = true;
+      hooklike_functions_includes = [];
       react_rules = [];
-      direct_dependent_files_fix = None;
       emoji = None;
+      enable_as_const = None;
       enable_const_params = None;
-      enforce_strict_call_arity = true;
       enums = false;
       estimate_recheck_time = None;
       exact_by_default = None;
@@ -218,7 +220,6 @@ module Opts = struct
       ignore_non_literal_requires = false;
       include_warnings = false;
       lazy_mode = None;
-      libdef_in_checking = true;
       log_saving = SMap.empty;
       long_lived_workers = false;
       max_files_checked_per_worker = 100;
@@ -235,21 +236,21 @@ module Opts = struct
       modules_are_use_strict = false;
       multi_platform = None;
       multi_platform_extensions = [];
+      multi_platform_ambient_supports_platform_directory_overrides = [];
       munge_underscores = false;
+      namespaces = false;
       no_flowlib = false;
       node_main_fields = ["main"];
       node_resolver_allow_root_relative = false;
       node_resolver_dirnames = ["node_modules"];
       node_resolver_root_relative_dirnames = [""];
-      precise_dependents = false;
       react_runtime = Options.ReactRuntimeClassic;
       recursion_limit = 10000;
       relay_integration = false;
+      relay_integration_esmodules = false;
       relay_integration_excludes = [];
       relay_integration_module_prefix = None;
       relay_integration_module_prefix_includes = ["<PROJECT_ROOT>/.*"];
-      renders_type_validation = false;
-      renders_type_validation_includes = [];
       root_name = None;
       saved_state_allow_reinit = None;
       saved_state_fetcher = Options.Dummy_fetcher;
@@ -259,6 +260,7 @@ module Opts = struct
       strict_es6_import_export_excludes = [];
       suppress_types = SSet.empty |> SSet.add "$FlowFixMe";
       traces = 0;
+      ts_syntax = false;
       use_mixed_in_catch_variables = None;
       wait_for_recheck = false;
       watchman_defer_states = [];
@@ -394,6 +396,20 @@ module Opts = struct
       ]
       (fun opts v -> Ok { opts with casting_syntax = Some v })
 
+  let const_assertion_parser =
+    boolean (fun opts v ->
+        match opts.casting_syntax with
+        | None
+        | Some Options.CastingSyntax.As
+        | Some Options.CastingSyntax.Both ->
+          Ok { opts with enable_as_const = Some v }
+        | Some Options.CastingSyntax.Colon ->
+          Error
+            ("Setting \"as_const\" to true requires that \"casting_syntax\" "
+            ^ "is set to \"as\" or \"both\"."
+            )
+    )
+
   let channel_mode_parser ~enabled =
     enum
       [("pipe", `pipe); ("socket", `socket)]
@@ -493,10 +509,31 @@ module Opts = struct
       ~multiple:true
       (fun opts v -> Ok { opts with haste_paths_includes = v :: opts.haste_paths_includes })
 
+  (* TODO: wait until hooks are settled and then remove remaining experimental component
+   * syntax flags *)
+  let component_syntax_prod_parser =
+    boolean (fun opts v ->
+        let open Options in
+        if v then
+          Ok
+            {
+              opts with
+              component_syntax = true;
+              react_rules =
+                [
+                  ValidateRefAccessDuringRender;
+                  DeepReadOnlyProps;
+                  DeepReadOnlyHookReturns;
+                  RulesOfHooks;
+                ];
+            }
+        else
+          Ok opts
+    )
+
   let component_syntax_parser =
-    let open Options in
-    enum
-      [("parsing", Parsing); ("typing", FullSupport)]
+    enum (* Compatibility with old enum options *)
+      [("parsing", false); ("typing", true); ("true", true); ("false", false)]
       (fun opts v -> Ok { opts with component_syntax = v })
 
   let react_rules_parser =
@@ -508,54 +545,24 @@ module Opts = struct
         ("validateRefAccessDuringRender", ValidateRefAccessDuringRender);
         ("deepReadOnlyProps", DeepReadOnlyProps);
         ("deepReadOnlyHookReturns", DeepReadOnlyHookReturns);
+        ("rulesOfHooks", RulesOfHooks);
       ]
       (fun opts v -> Ok { opts with react_rules = v :: opts.react_rules })
 
-  let component_syntax_includes_parser =
+  let hooklike_functions_includes_parser =
     string
-      ~init:(fun opts -> { opts with component_syntax_includes = [] })
+      ~init:(fun opts -> { opts with hooklike_functions_includes = [] })
       ~multiple:true
       (fun opts v ->
-        Ok
-          {
-            opts with
-            component_syntax = opts.component_syntax;
-            component_syntax_includes = v :: opts.component_syntax_includes;
-          })
+        Ok { opts with hooklike_functions_includes = v :: opts.hooklike_functions_includes })
 
-  let component_syntax_deep_read_only_parser =
-    boolean (fun opts v ->
-        if v then
-          Ok { opts with react_rules = Options.DeepReadOnlyProps :: opts.react_rules }
-        else
-          Ok opts
-    )
-
-  let renders_type_validation_parser =
-    boolean (fun opts v -> Ok { opts with renders_type_validation = v })
-
-  let renders_type_validation_includes_parser =
-    string
-      ~init:(fun opts -> { opts with renders_type_validation_includes = [] })
-      ~multiple:true
-      (fun opts v ->
-        Ok
-          {
-            opts with
-            renders_type_validation_includes = v :: opts.renders_type_validation_includes;
-          })
+  let hooklike_functions_parser = boolean (fun opts v -> Ok { opts with hooklike_functions = v })
 
   let automatic_require_default_parser =
     boolean (fun opts v -> Ok { opts with automatic_require_default = Some v })
 
   let babel_loose_array_spread_parser =
     boolean (fun opts v -> Ok { opts with babel_loose_array_spread = Some v })
-
-  let direct_dependent_files_fix_parser =
-    boolean (fun opts v -> Ok { opts with direct_dependent_files_fix = Some v })
-
-  let enforce_strict_call_arity_parser =
-    boolean (fun opts v -> Ok { opts with enforce_strict_call_arity = v })
 
   let estimate_recheck_time_parser =
     boolean (fun opts v -> Ok { opts with estimate_recheck_time = Some v })
@@ -680,6 +687,30 @@ module Opts = struct
         else
           Ok { opts with multi_platform_extensions = v :: opts.multi_platform_extensions })
 
+  let multi_platform_ambient_supports_platform_directory_overrides_parser =
+    mapping
+      ~multiple:true
+      (fun v -> Ok v)
+      (fun opts (path, platforms) ->
+        let platforms = Base.String.split ~on:',' platforms |> Base.List.map ~f:String.trim in
+        match
+          Base.List.find_map platforms ~f:(fun p ->
+              if Base.List.mem opts.multi_platform_extensions ("." ^ p) ~equal:String.equal then
+                None
+              else
+                Some ("Unknown platform '" ^ p ^ "'.")
+          )
+        with
+        | Some e -> Error e
+        | None ->
+          Ok
+            {
+              opts with
+              multi_platform_ambient_supports_platform_directory_overrides =
+                (path, platforms)
+                :: opts.multi_platform_ambient_supports_platform_directory_overrides;
+            })
+
   let name_mapper_parser =
     mapping
       ~multiple:true
@@ -734,7 +765,13 @@ module Opts = struct
         let node_resolver_root_relative_dirnames = v :: opts.node_resolver_root_relative_dirnames in
         Ok { opts with node_resolver_root_relative_dirnames })
 
-  let precise_dependents_parser = boolean (fun opts v -> Ok { opts with precise_dependents = v })
+  let precise_dependents_parser =
+    boolean (fun opts v ->
+        if not v then
+          Error "precise dependents must be enabled."
+        else
+          Ok opts
+    )
 
   let react_runtime_parser =
     enum
@@ -817,6 +854,14 @@ module Opts = struct
     [
       ("all", boolean (fun opts v -> Ok { opts with all = Some v }));
       ("autoimports", boolean (fun opts v -> Ok { opts with autoimports = Some v }));
+      ( "autoimports.min_characters",
+        uint (fun opts v ->
+            if opts.autoimports = Some false then
+              Error "Cannot be configured unless autoimport is enabled."
+            else
+              Ok { opts with autoimports_min_characters = Some v }
+        )
+      );
       ( "autoimports_ranked_by_usage",
         boolean (fun opts v -> Ok { opts with autoimports_ranked_by_usage = Some v })
       );
@@ -830,26 +875,26 @@ module Opts = struct
       );
       ("babel_loose_array_spread", babel_loose_array_spread_parser);
       ("casting_syntax", casting_syntax_parser);
+      ("component_syntax", component_syntax_prod_parser);
       ("emoji", boolean (fun opts v -> Ok { opts with emoji = Some v }));
       ("enums", boolean (fun opts v -> Ok { opts with enums = v }));
       ("estimate_recheck_time", estimate_recheck_time_parser);
       ("exact_by_default", boolean (fun opts v -> Ok { opts with exact_by_default = Some v }));
-      ( "experimental.batch_lsp_request_processing",
-        boolean (fun opts v -> Ok { opts with batch_lsp_request_processing = v })
+      ("as_const", const_assertion_parser);
+      ( "experimental.blocking_worker_communication",
+        boolean (fun opts v -> Ok { opts with blocking_worker_communication = v })
       );
       ( "experimental.const_params",
         boolean (fun opts v -> Ok { opts with enable_const_params = Some v })
       );
       ("experimental.component_syntax", component_syntax_parser);
-      ("experimental.component_syntax.typing.includes", component_syntax_includes_parser);
-      ("experimental.component_syntax.deep_read_only", component_syntax_deep_read_only_parser);
+      ("experimental.component_syntax.hooklike_functions", hooklike_functions_parser);
+      ( "experimental.component_syntax.hooklike_functions.includes",
+        hooklike_functions_includes_parser
+      );
       ("experimental.react_rule", react_rules_parser);
-      ("experimental.renders_type_validation", renders_type_validation_parser);
-      ("experimental.renders_type_validation.includes", renders_type_validation_includes_parser);
-      ("experimental.direct_dependent_files_fix", direct_dependent_files_fix_parser);
       ("experimental.facebook_module_interop", facebook_module_interop_parser);
       ("experimental.module.automatic_require_default", automatic_require_default_parser);
-      ("experimental.strict_call_arity", enforce_strict_call_arity_parser);
       ("experimental.strict_es6_import_export", strict_es6_import_export_parser);
       ("experimental.strict_es6_import_export.excludes", strict_es6_import_export_excludes_parser);
       ("experimental.channel_mode", channel_mode_parser ~enabled:true);
@@ -864,6 +909,11 @@ module Opts = struct
         boolean (fun opts v -> Ok { opts with multi_platform = Some v })
       );
       ("experimental.multi_platform.extensions", multi_platform_extensions_parser);
+      ( "experimental.multi_platform.ambient_supports_platform.directory_overrides",
+        multi_platform_ambient_supports_platform_directory_overrides_parser
+      );
+      ("experimental.namespaces", boolean (fun opts v -> Ok { opts with namespaces = v }));
+      ("experimental.ts_syntax", boolean (fun opts v -> Ok { opts with ts_syntax = v }));
       ("experimenta.precise_dependents", precise_dependents_parser);
       ("facebook.fbs", string (fun opts v -> Ok { opts with facebook_fbs = Some v }));
       ("facebook.fbt", string (fun opts v -> Ok { opts with facebook_fbt = Some v }));
@@ -884,9 +934,6 @@ module Opts = struct
       ("gc.worker.space_overhead", gc_worker_space_overhead_parser);
       ("gc.worker.window_size", gc_worker_window_size_parser);
       ("include_warnings", boolean (fun opts v -> Ok { opts with include_warnings = v }));
-      ( "experimental.libdef_in_checking",
-        boolean (fun opts v -> Ok { opts with libdef_in_checking = v })
-      );
       ("lazy_mode", lazy_mode_parser);
       ("log_saving", log_saving_parser);
       ("max_header_tokens", uint (fun opts v -> Ok { opts with max_header_tokens = v }));
@@ -917,6 +964,9 @@ module Opts = struct
       ("react.runtime", react_runtime_parser);
       ("recursion_limit", uint (fun opts v -> Ok { opts with recursion_limit = v }));
       ("relay_integration", boolean (fun opts v -> Ok { opts with relay_integration = v }));
+      ( "relay_integration.esmodules",
+        boolean (fun opts v -> Ok { opts with relay_integration_esmodules = v })
+      );
       ("relay_integration.excludes", relay_integration_excludes_parser);
       ( "relay_integration.module_prefix",
         string (fun opts v -> Ok { opts with relay_integration_module_prefix = Some v })
@@ -1473,6 +1523,8 @@ let all c = c.options.Opts.all
 
 let autoimports c = c.options.Opts.autoimports
 
+let autoimports_min_characters c = c.options.Opts.autoimports_min_characters
+
 let autoimports_ranked_by_usage c = c.options.Opts.autoimports_ranked_by_usage
 
 let autoimports_ranked_by_usage_boost_exact_match_min_length c =
@@ -1482,7 +1534,7 @@ let automatic_require_default c = c.options.Opts.automatic_require_default
 
 let babel_loose_array_spread c = c.options.Opts.babel_loose_array_spread
 
-let batch_lsp_request_processing c = c.options.Opts.batch_lsp_request_processing
+let blocking_worker_communication c = c.options.Opts.blocking_worker_communication
 
 let casting_syntax c = c.options.Opts.casting_syntax
 
@@ -1490,17 +1542,17 @@ let channel_mode c = c.options.Opts.channel_mode
 
 let component_syntax c = c.options.Opts.component_syntax
 
-let component_syntax_includes c = c.options.Opts.component_syntax_includes
+let hooklike_functions_includes c = c.options.Opts.hooklike_functions_includes
+
+let hooklike_functions c = c.options.Opts.hooklike_functions
 
 let react_rules c = c.options.Opts.react_rules
 
-let direct_dependent_files_fix c = c.options.Opts.direct_dependent_files_fix
-
 let emoji c = c.options.Opts.emoji
 
-let enable_const_params c = c.options.Opts.enable_const_params
+let enable_as_const c = c.options.Opts.enable_as_const
 
-let enforce_strict_call_arity c = c.options.Opts.enforce_strict_call_arity
+let enable_const_params c = c.options.Opts.enable_const_params
 
 let enums c = c.options.Opts.enums
 
@@ -1562,8 +1614,6 @@ let include_warnings c = c.options.Opts.include_warnings
 
 let lazy_mode c = c.options.Opts.lazy_mode
 
-let libdef_in_checking c = c.options.Opts.libdef_in_checking
-
 (* global defaults for lint severities and strict mode *)
 let lint_severities c = c.lint_severities
 
@@ -1599,7 +1649,12 @@ let multi_platform c = c.options.Opts.multi_platform
 
 let multi_platform_extensions c = c.options.Opts.multi_platform_extensions
 
+let multi_platform_ambient_supports_platform_directory_overrides c =
+  c.options.Opts.multi_platform_ambient_supports_platform_directory_overrides
+
 let munge_underscores c = c.options.Opts.munge_underscores
+
+let namespaces c = c.options.Opts.namespaces
 
 let no_flowlib c = c.options.Opts.no_flowlib
 
@@ -1611,13 +1666,13 @@ let node_resolver_dirnames c = c.options.Opts.node_resolver_dirnames
 
 let node_resolver_root_relative_dirnames c = c.options.Opts.node_resolver_root_relative_dirnames
 
-let precise_dependents c = c.options.Opts.precise_dependents
-
 let react_runtime c = c.options.Opts.react_runtime
 
 let recursion_limit c = c.options.Opts.recursion_limit
 
 let relay_integration c = c.options.Opts.relay_integration
+
+let relay_integration_esmodules c = c.options.Opts.relay_integration_esmodules
 
 let relay_integration_excludes c = c.options.Opts.relay_integration_excludes
 
@@ -1625,10 +1680,6 @@ let relay_integration_module_prefix c = c.options.Opts.relay_integration_module_
 
 let relay_integration_module_prefix_includes c =
   c.options.Opts.relay_integration_module_prefix_includes
-
-let renders_type_validation c = c.options.Opts.renders_type_validation
-
-let renders_type_validation_includes c = c.options.Opts.renders_type_validation_includes
 
 let required_version c = c.version
 
@@ -1651,6 +1702,8 @@ let strict_mode c = c.strict_mode
 let suppress_types c = c.options.Opts.suppress_types
 
 let traces c = c.options.Opts.traces
+
+let ts_syntax c = c.options.Opts.ts_syntax
 
 let use_mixed_in_catch_variables c = c.options.Opts.use_mixed_in_catch_variables
 

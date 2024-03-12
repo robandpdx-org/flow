@@ -17,10 +17,7 @@ type options = {
 
 (* We can extract the observable interface of a module by extracting information
  * about what it requires and what it exports. *)
-type t = {
-  requires: require list;
-  module_kind: module_kind;
-}
+type t
 
 (* We track information about dependencies for each unique module reference in a
  * file. For example, `import X from "foo"` and `require("foo")` both induce
@@ -101,20 +98,9 @@ and require_bindings =
    * source: const {a, b: c} = require('./foo');
    * result: {a: (a_loc, a), b: (c_loc, c)} *)
   | BindNamed of (Loc.t Flow_ast_utils.ident * require_bindings) list
-
-(* All modules are assumed to be CommonJS to start with, but if we see an ES
- * module-style export, we switch to ES. *)
-and module_kind =
-  | CommonJS of { mod_exp_loc: Loc.t option }
-  | ES
 [@@deriving show]
 
-type tolerable_error =
-  | IndeterminateModuleType of Loc.t
-  (* e.g. `foo(module)`, dangerous because `module` is aliased *)
-  | BadExportContext of string (* offending identifier *) * Loc.t
-  | SignatureVerificationError of Loc.t Signature_error.t
-[@@deriving show]
+type tolerable_error = SignatureVerificationError of Loc.t Signature_error.t [@@deriving show]
 
 type tolerable_t = t * tolerable_error list
 
@@ -122,8 +108,7 @@ val empty : t
 
 val default_opts : options
 
-val program :
-  file_key:File_key.t -> ast:(Loc.t, Loc.t) Flow_ast.Program.t -> opts:options -> tolerable_t
+val program : file_key:File_key.t -> ast:(Loc.t, Loc.t) Flow_ast.Program.t -> opts:options -> t
 
 (* Use for debugging; not for exposing info to the end user *)
 val to_string : t -> string
@@ -132,3 +117,5 @@ val require_loc_map : t -> Loc.t list SMap.t
 
 (* Only the keys returned by `require_loc_map` *)
 val require_set : t -> SSet.t
+
+val requires : t -> require list

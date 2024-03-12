@@ -40,14 +40,14 @@ module type S = sig
   val program_with_scope :
     cx ->
     ?lib:bool ->
-    ?exclude_syms:NameUtils.Set.t ->
+    ?exclude_syms:SSet.t ->
     (ALoc.t, ALoc.t) Flow_ast.Program.t ->
     abrupt_kind option * Env_api.env_info
 
   val program :
     cx ->
     ?lib:bool ->
-    ?exclude_syms:NameUtils.Set.t ->
+    ?exclude_syms:SSet.t ->
     (ALoc.t, ALoc.t) Flow_ast.Program.t ->
     Env_api.values * (int -> Env_api.refinement)
 end
@@ -622,7 +622,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
        when we are checking libdef code. In libdefs, this set represents a list of names that we
        have already added to the globals. When we read a name in this set, we will ignore the local
        file binding and treat it as a read of global. *)
-    exclude_syms: NameUtils.Set.t;
+    exclude_syms: SSet.t;
     (* When an abrupt completion is raised, it falls through any subsequent
        straight-line code, until it reaches a merge point in the control-flow
        graph. At that point, it can be re-raised if and only if all other reaching
@@ -656,7 +656,6 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
     (* Track parameter binding def_locs currently being processed, so that we can
        error when these appear in the corresponding annotation. *)
     current_bindings: string L.LMap.t;
-    cjs_exports_state: Env_api.cjs_exports_state;
   }
 
   type pattern_write_kind =
@@ -807,11 +806,15 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
       | (Bindings.Enum, AssignmentWrite) ->
         Some
           Error_message.(EBindingError (EEnumReassigned, assignment_loc, OrdinaryName name, def_loc))
-      | (Bindings.Type { imported }, AssignmentWrite) ->
+      | (Bindings.Type { imported; type_only_namespace }, AssignmentWrite) ->
         Some
           Error_message.(
             EBindingError
-              (ETypeInValuePosition { imported; name }, assignment_loc, OrdinaryName name, def_loc)
+              ( ETypeInValuePosition { imported; type_only_namespace; name },
+                assignment_loc,
+                OrdinaryName name,
+                def_loc
+              )
           )
       | ( Bindings.(Parameter | ComponentParameter),
           ( VarBinding | LetBinding | ClassBinding | ConstBinding | FunctionBinding
@@ -852,25 +855,20 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
            in
            SMap.add name entry acc)
          unbound_names
-    |> NameUtils.Set.fold
+    |> SSet.fold
          (fun name acc ->
-           match name with
-           | OrdinaryName name ->
-             let global_val = Val.global name in
-             let entry =
-               {
-                 val_ref = ref global_val;
-                 havoc = global_val;
-                 writes_by_closure_provider_val = None;
-                 def_loc = None;
-                 heap_refinements = ref HeapRefinementMap.empty;
-                 kind = Bindings.Var;
-               }
-             in
-             SMap.add name entry acc
-           | InternalName _
-           | InternalModuleName _ ->
-             acc)
+           let global_val = Val.global name in
+           let entry =
+             {
+               val_ref = ref global_val;
+               havoc = global_val;
+               writes_by_closure_provider_val = None;
+               def_loc = None;
+               heap_refinements = ref HeapRefinementMap.empty;
+               kind = Bindings.Var;
+             }
+           in
+           SMap.add name entry acc)
          exclude_syms
     (* this has to come later, since this can be thought to be unbound names in SSA builder when it's used as a type. *)
     |> (let v = program_loc |> mk_reason (RCustom "global object") |> Val.global_this in
@@ -1068,20 +1066,9 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
 
       val mutable env_state : name_resolver_state =
         let (env, jsx_base_name) = initial_env cx ~is_lib exclude_syms unbound_names program_loc in
-        let write_entries =
-          if is_lib then
-            EnvMap.empty
-          else
-            let filename = Context.file cx in
-            let loc_none_with_file = Loc.{ none with source = Some filename } |> ALoc.of_loc in
-            EnvMap.empty
-            |> EnvMap.add
-                 (Env_api.CJSModuleExportsLoc, loc_none_with_file)
-                 (Env_api.AssigningWrite (mk_reason RExports loc_none_with_file))
-        in
         {
           values = L.LMap.empty;
-          write_entries;
+          write_entries = EnvMap.empty;
           predicate_refinement_maps = L.LMap.empty;
           type_guard_consistency_maps = L.LMap.empty;
           curr_id = 0;
@@ -1098,7 +1085,6 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
           jsx_base_name;
           pred_func_map = L.LMap.empty;
           current_bindings = L.LMap.empty;
-          cjs_exports_state = Env_api.CJSExportNames SMap.empty;
         }
 
       method jsx_base_name = env_state.jsx_base_name
@@ -1116,8 +1102,6 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
       method type_guard_consistency_maps = env_state.type_guard_consistency_maps
 
       method pred_func_map = env_state.pred_func_map
-
-      method cjs_exports_state = env_state.cjs_exports_state
 
       method private is_assigning_write key =
         match EnvMap.find_opt key env_state.write_entries with
@@ -1159,9 +1143,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
           | _ -> Val.merge v1 v2)
         | None -> Val.merge v1 v2
 
-      method private is_excluded name = NameUtils.Set.mem name env_state.exclude_syms
-
-      method private is_excluded_ordinary_name name = this#is_excluded (OrdinaryName name)
+      method private is_excluded_ordinary_name name = SSet.mem name env_state.exclude_syms
 
       method private new_id () =
         let new_id = env_state.curr_id in
@@ -2363,7 +2345,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
       (* This function should be called _after_ a member expression is assigned a value.
        * It havocs other heap refinements depending on the name of the member and then adds
        * a write to the heap refinement entry for that member expression *)
-      method assign_expression ~operator lhs rhs =
+      method assign_expression lhs rhs =
         match lhs with
         | (loc, Flow_ast.Expression.Member member) ->
           (* Use super member to visit sub-expressions to avoid record a read of the member. *)
@@ -2381,90 +2363,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
               in
               env_state <- { env_state with write_entries }
             | _ -> ()
-          end;
-          let is_global_module () = Val.is_global !((this#env_read "module").val_ref) in
-          let is_global_exports () = Val.is_global !((this#env_read "exports").val_ref) in
-          (match (operator, member) with
-          (* module.exports = ... *)
-          | ( None,
-              {
-                Ast.Expression.Member._object =
-                  ( _,
-                    Ast.Expression.Identifier (_, { Ast.Identifier.name = "module"; comments = _ })
-                  );
-                property =
-                  Ast.Expression.Member.PropertyIdentifier
-                    (_, { Ast.Identifier.name = "exports"; comments = _ });
-                comments = _;
-              }
-            )
-            when is_global_module () ->
-            if this#in_toplevel_scope then
-              env_state <- { env_state with cjs_exports_state = Env_api.CJSModuleExports loc }
-            else
-              add_output (Error_message.EBadExportPosition loc)
-          (* module.exports.foo = ... *)
-          | ( None,
-              {
-                Ast.Expression.Member._object =
-                  ( module_exports_loc,
-                    Ast.Expression.Member
-                      {
-                        Ast.Expression.Member._object =
-                          ( _,
-                            Ast.Expression.Identifier
-                              (_, { Ast.Identifier.name = "module"; comments = _ })
-                          );
-                        property =
-                          Ast.Expression.Member.PropertyIdentifier
-                            (_, { Ast.Identifier.name = "exports"; comments = _ });
-                        comments = _;
-                      }
-                  );
-                property =
-                  Ast.Expression.Member.PropertyIdentifier
-                    (key_loc, { Ast.Identifier.name; comments = _ });
-                comments = _;
-              }
-            )
-            when is_global_module () ->
-            if this#in_toplevel_scope then
-              match env_state.cjs_exports_state with
-              | Env_api.CJSModuleExports _ -> ()
-              | Env_api.CJSExportNames named ->
-                env_state <-
-                  {
-                    env_state with
-                    cjs_exports_state = Env_api.CJSExportNames (SMap.add name (key_loc, loc) named);
-                  }
-            else
-              add_output (Error_message.EBadExportPosition module_exports_loc)
-          (* exports.foo = ... *)
-          | ( None,
-              {
-                Ast.Expression.Member._object =
-                  ( exports_loc,
-                    Ast.Expression.Identifier (_, { Ast.Identifier.name = "exports"; comments = _ })
-                  );
-                property =
-                  Ast.Expression.Member.PropertyIdentifier
-                    (key_loc, { Ast.Identifier.name; comments = _ });
-                comments = _;
-              }
-            )
-            when is_global_exports () ->
-            if this#in_toplevel_scope then
-              match env_state.cjs_exports_state with
-              | Env_api.CJSModuleExports _ -> ()
-              | Env_api.CJSExportNames named ->
-                env_state <-
-                  {
-                    env_state with
-                    cjs_exports_state = Env_api.CJSExportNames (SMap.add name (key_loc, loc) named);
-                  }
-            else
-              add_output (Error_message.EBadExportPosition exports_loc)
-          | _ -> ())
+          end
         | _ -> statement_error
 
       method assign_member ~delete lhs_member lhs_loc assigned_val val_reason =
@@ -2565,7 +2464,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
                 ignore @@ this#binding_pattern_track_object_destructuring ?kind:None ~acc:right left
               | (_, Expression e) ->
                 (* given `o.x = e`, read o then read e *)
-                this#assign_expression ~operator e right
+                this#assign_expression e right
             end
           | Some
               ( PlusAssign | MinusAssign | MultAssign | ExpAssign | DivAssign | ModAssign
@@ -2582,7 +2481,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
               | (_, Expression e) ->
                 (* given `o.x += e`, read o then read e *)
                 ignore @@ this#pattern_expression e;
-                this#assign_expression ~operator e right
+                this#assign_expression e right
               | (_, (Object _ | Array _)) -> statement_error
             end
           | Some ((OrAssign | AndAssign | NullishAssign) as operator) ->
@@ -5429,6 +5328,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
           expression
         | Array _
         | ArrowFunction _
+        | AsConstExpression _
         | AsExpression _
         | Class _
         | Conditional _
@@ -5452,7 +5352,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
         | TaggedTemplate _
         | TemplateLiteral _
         | TypeCast _
-        | TSTypeCast _
+        | TSSatisfies _
         | This _
         | Update _
         | Yield _ ->
@@ -5607,31 +5507,8 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
         let v = Val.simplify def_loc (Some kind) (Some name) v in
         v
 
-      method! declare_module loc ({ Ast.Statement.DeclareModule.id; body; _ } as m) =
-        let (name_loc, name) =
-          match id with
-          | Ast.Statement.DeclareModule.Identifier (loc, { Ast.Identifier.name; _ }) -> (loc, name)
-          | Ast.Statement.DeclareModule.Literal (loc, { Ast.StringLiteral.value; _ }) -> (loc, value)
-        in
+      method! declare_module _loc ({ Ast.Statement.DeclareModule.id = _; body; _ } as m) =
         let (block_loc, { Ast.Statement.Block.body = statements; comments = _ }) = body in
-        let reason = mk_reason (RModule (OrdinaryName name)) name_loc in
-        let write_entries =
-          env_state.write_entries
-          |> EnvMap.add_ordinary name_loc (Env_api.AssigningWrite reason)
-          |> EnvMap.add (Env_api.CJSModuleExportsLoc, loc) (Env_api.AssigningWrite reason)
-        in
-        let values =
-          L.LMap.add
-            name_loc
-            {
-              def_loc = Some name_loc;
-              value = Val.one reason;
-              binding_kind_opt = None;
-              name = Some name;
-            }
-            env_state.values
-        in
-        env_state <- { env_state with values; write_entries };
         let bindings =
           let hoist =
             new Hoister.hoister ~flowmin_compatibility:false ~enable_enums ~with_types:true
@@ -5639,7 +5516,26 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
           hoist#eval hoist#statement_list statements
         in
         let saved_exclude_syms = env_state.exclude_syms in
-        env_state <- { env_state with exclude_syms = NameUtils.Set.empty };
+        env_state <- { env_state with exclude_syms = SSet.empty };
+        ignore @@ this#statements_with_bindings block_loc bindings statements;
+        env_state <- { env_state with exclude_syms = saved_exclude_syms };
+        m
+
+      method! declare_namespace loc ({ Ast.Statement.DeclareNamespace.id; body; _ } as m) =
+        if Flow_ast_utils.is_type_only_declaration_statement (loc, Ast.Statement.DeclareNamespace m)
+        then
+          ignore @@ this#binding_type_identifier id
+        else
+          ignore @@ this#pattern_identifier ~kind:Ast.Variable.Const id;
+        let (block_loc, { Ast.Statement.Block.body = statements; comments = _ }) = body in
+        let bindings =
+          let hoist =
+            new Hoister.hoister ~flowmin_compatibility:false ~enable_enums ~with_types:true
+          in
+          hoist#eval hoist#statement_list statements
+        in
+        let saved_exclude_syms = env_state.exclude_syms in
+        env_state <- { env_state with exclude_syms = SSet.empty };
         ignore @@ this#statements_with_bindings block_loc bindings statements;
         env_state <- { env_state with exclude_syms = saved_exclude_syms };
         m
@@ -5873,7 +5769,7 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
         super#lambda ~is_arrow ~fun_loc ~generator_return_loc params return predicate body
     end
 
-  let program_with_scope cx ?(lib = false) ?(exclude_syms = NameUtils.Set.empty) program =
+  let program_with_scope cx ?(lib = false) ?(exclude_syms = SSet.empty) program =
     let (loc, _) = program in
     let jsx_ast =
       match Context.jsx cx with
@@ -5912,7 +5808,6 @@ module Make (Context : C) (FlowAPIUtils : F with type cx = Context.t) :
         type_guard_consistency_maps = env_walk#type_guard_consistency_maps;
         refinement_of_id = env_walk#refinement_of_id;
         pred_func_map = env_walk#pred_func_map;
-        cjs_exports_state = env_walk#cjs_exports_state;
       }
     )
 

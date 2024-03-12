@@ -5,6 +5,34 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+open Reason
+
+module type ConsGen = sig
+  val mk_instance :
+    Context.t -> ?type_t_kind:Type.type_t_kind -> reason -> ?use_desc:bool -> Type.t -> Type.t
+
+  val specialize :
+    Context.t ->
+    Type.t ->
+    Type.use_op ->
+    Reason.t ->
+    Reason.t ->
+    Type.t list Base.Option.t ->
+    Type.t
+
+  val get_prop :
+    Context.t -> Type.use_op -> Reason.t -> ?op_reason:Reason.t -> Reason.name -> Type.t -> Type.t
+
+  val qualify_type :
+    Context.t -> Type.use_op -> Reason.t -> op_reason:Reason.t -> Reason.name -> Type.t -> Type.t
+
+  val get_builtin_type : Context.t -> reason -> ?use_desc:bool -> string -> Type.t
+
+  val obj_test_proto : Context.t -> Reason.t -> Type.t -> Type.t
+
+  val mixin : Context.t -> Reason.t -> Type.t -> Type.t
+end
+
 (** services for producing types from annotations,
     called during AST traversal.
  *)
@@ -45,6 +73,16 @@ module type S = sig
     (ALoc.t, ALoc.t) Flow_ast.Type.Renders.t ->
     Type.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Type.Renders.t
 
+  val convert_type_guard :
+    Context.t ->
+    Type.t Subst_name.Map.t ->
+    Type.fun_param list ->
+    ALoc.t ->
+    (ALoc.t, ALoc.t) Flow_ast.Identifier.t ->
+    (ALoc.t, ALoc.t) Flow_ast.Type.t ->
+    (ALoc.t, ALoc.t Flow_ast.Comment.t list) Flow_ast.Syntax.t option ->
+    Type.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Type.TypeGuard.t * Type.fun_predicate option
+
   val mk_super :
     Context.t ->
     Type.t Subst_name.Map.t ->
@@ -53,35 +91,6 @@ module type S = sig
     (ALoc.t, ALoc.t) Flow_ast.Type.TypeArgs.t option ->
     (ALoc.t * Type.t * Type.t list option)
     * (ALoc.t, ALoc.t * Type.t) Flow_ast.Type.TypeArgs.t option
-
-  val mk_type_annotation :
-    Context.t ->
-    Type.t Subst_name.Map.t ->
-    Reason.t ->
-    (ALoc.t, ALoc.t) Flow_ast.Type.annotation_or_hint ->
-    Type.annotated_or_inferred * (ALoc.t, ALoc.t * Type.t) Flow_ast.Type.annotation_or_hint
-
-  val mk_return_annot :
-    Context.t ->
-    Type.t Subst_name.Map.t ->
-    Type.fun_param list ->
-    Reason.t ->
-    (ALoc.t, ALoc.t) Flow_ast.Function.ReturnAnnot.t ->
-    Type.annotated_or_inferred
-    * (ALoc.t, ALoc.t * Type.t) Flow_ast.Function.ReturnAnnot.t
-    * Type.fun_predicate option
-
-  val mk_return_type_annotation :
-    Context.t ->
-    Type.t Subst_name.Map.t ->
-    Type.fun_param list ->
-    Reason.t ->
-    void_return:bool ->
-    async:bool ->
-    (ALoc.t, ALoc.t) Flow_ast.Function.ReturnAnnot.t ->
-    Type.annotated_or_inferred
-    * (ALoc.t, ALoc.t * Type.t) Flow_ast.Function.ReturnAnnot.t
-    * Type.fun_predicate option
 
   val mk_type_available_annotation :
     Context.t ->
@@ -122,7 +131,7 @@ module type S = sig
     ALoc.t ->
     Reason.t ->
     (ALoc.t, ALoc.t) Flow_ast.Statement.Interface.t ->
-    Class_type_sig.Types.t * Type.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Statement.Interface.t
+    Type.t * Class_type_sig.Types.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Statement.Interface.t
 
   val mk_declare_class_sig :
     Context.t ->
@@ -130,7 +139,7 @@ module type S = sig
     string ->
     Reason.t ->
     (ALoc.t, ALoc.t) Flow_ast.Statement.DeclareClass.t ->
-    Class_type_sig.Types.t * Type.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Statement.DeclareClass.t
+    Type.t * Class_type_sig.Types.t * (ALoc.t, ALoc.t * Type.t) Flow_ast.Statement.DeclareClass.t
 
   val mk_declare_component_sig :
     Context.t ->

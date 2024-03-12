@@ -300,7 +300,13 @@ let find_signatures ~options ~reader ~cx ~file_sig ~ast ~typed_ast loc =
     let { Type.TypeScheme.type_ = t; _ } = scheme in
     let t' = fix_alias_reason cx t in
     let scheme = { scheme with Type.TypeScheme.type_ = t' } in
-    let genv = Ty_normalizer_env.mk_genv ~cx ~file:(Context.file cx) ~typed_ast ~file_sig in
+    let genv =
+      Ty_normalizer_env.mk_genv
+        ~cx
+        ~file:(Context.file cx)
+        ~typed_ast_opt:(Some typed_ast)
+        ~file_sig
+    in
     let ty = Ty_normalizer_flow.from_scheme ~options:ty_normalizer_options ~genv scheme in
     let jsdoc =
       match
@@ -318,7 +324,7 @@ let find_signatures ~options ~reader ~cx ~file_sig ~ast ~typed_ast loc =
       | GetDef_js.Get_def_result.Partial (locs, _, _)
         when LocSet.cardinal locs = 1 ->
         let getdef_loc = LocSet.choose locs in
-        Find_documentation.jsdoc_of_getdef_loc ~current_ast:typed_ast ~reader getdef_loc
+        Find_documentation.jsdoc_of_getdef_loc ~ast ~reader getdef_loc
       | _ -> None
     in
     (match ty with

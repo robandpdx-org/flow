@@ -132,9 +132,9 @@ let check_for_duplicate_exports =
             | ClassDeclaration { Class.id = None; _ }
             | Continue _ | Debugger _ | DeclareClass _ | DeclareComponent _ | DeclareEnum _
             | DeclareExportDeclaration _ | DeclareFunction _ | DeclareInterface _ | DeclareModule _
-            | DeclareModuleExports _ | DeclareTypeAlias _ | DeclareOpaqueType _ | DeclareVariable _
-            | DoWhile _ | Empty _ | ExportDefaultDeclaration _ | ExportNamedDeclaration _
-            | Expression _ | For _ | ForIn _ | ForOf _
+            | DeclareModuleExports _ | DeclareNamespace _ | DeclareTypeAlias _ | DeclareOpaqueType _
+            | DeclareVariable _ | DoWhile _ | Empty _ | ExportDefaultDeclaration _
+            | ExportNamedDeclaration _ | Expression _ | For _ | ForIn _ | ForOf _
             | FunctionDeclaration { Function.id = None; _ }
             | If _ | ImportDeclaration _ | Labeled _ | Return _ | Switch _ | Throw _ | Try _
             | While _ | With _ ))
@@ -155,9 +155,9 @@ let check_for_duplicate_exports =
         Statement.(
           ( Block _ | Break _ | ClassDeclaration _ | Continue _ | Debugger _ | DeclareClass _
           | DeclareComponent _ | DeclareEnum _ | DeclareExportDeclaration _ | DeclareFunction _
-          | DeclareInterface _ | DeclareModule _ | DeclareModuleExports _ | DeclareTypeAlias _
-          | DeclareOpaqueType _ | DeclareVariable _ | DoWhile _ | Empty _ | EnumDeclaration _
-          | Expression _ | For _ | ForIn _ | ForOf _ | FunctionDeclaration _
+          | DeclareInterface _ | DeclareModule _ | DeclareModuleExports _ | DeclareNamespace _
+          | DeclareTypeAlias _ | DeclareOpaqueType _ | DeclareVariable _ | DoWhile _ | Empty _
+          | EnumDeclaration _ | Expression _ | For _ | ForIn _ | ForOf _ | FunctionDeclaration _
           | ComponentDeclaration _ | If _ | ImportDeclaration _ | InterfaceDeclaration _ | Labeled _
           | Return _ | Switch _ | Throw _ | Try _ | TypeAlias _ | OpaqueType _
           | VariableDeclaration _ | While _ | With _ ))
@@ -312,7 +312,7 @@ module rec Parse : PARSER = struct
        * statements... (see section 13) *)
     | T_LET -> let_ env
     | T_CONST -> const env
-    | _ when Peek.is_function env -> Declaration._function env
+    | _ when Peek.is_function env || Peek.is_hook env -> Declaration._function env
     | _ when Peek.is_class env -> class_declaration env decorators
     | T_INTERFACE -> interface env
     | T_DECLARE -> declare env
@@ -374,7 +374,7 @@ module rec Parse : PARSER = struct
     (* The rest of these patterns handle ExpressionStatement and its negative
        lookaheads, which prevent ambiguities.
        See https://tc39.github.io/ecma262/#sec-expression-statement *)
-    | _ when Peek.is_function env ->
+    | _ when Peek.is_function env || Peek.is_hook env ->
       let func = Declaration._function env in
       function_as_statement_error_at env (fst func);
       func

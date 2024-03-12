@@ -14,8 +14,6 @@
  * a union we need to visit its parts to determine if this is a covered type.
  *
  * Some constructors that we, perhaps controversially, consider concrete are:
- *  - AnyWithLowerBoundT
- *  - AnyWithUpperBoundT
  *  - KeysT
  *
  * In addition to being considered concrete the above constructors are also
@@ -139,10 +137,9 @@ let visitor =
       | AnnotT (_, t, _)
       | ExactT (_, t)
       | DefT (_, PolyT { t_out = t; _ })
-      | TypeAppT { reason = _; use_op = _; type_ = t; targs = _; use_desc = _ }
+      | TypeAppT { reason = _; use_op = _; type_ = t; targs = _; from_value = _; use_desc = _ }
       | DefT (_, TypeT (_, t))
       | GenericT { bound = t; _ }
-      | ThisClassT (_, t, _, _)
       | ThisTypeAppT (_, t, _, _) ->
         self#type_ cx t
       | UnionT (_, rep) ->
@@ -158,9 +155,11 @@ let visitor =
       | FunProtoBindT _
       | FunProtoCallT _
       | InternalT _
+      | ThisInstanceT _
       | KeysT _
       | MaybeT _
       | ModuleT _
+      | NamespaceT _
       | NullProtoT _
       | OpaqueT _
       | ObjProtoT _

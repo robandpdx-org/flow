@@ -72,6 +72,8 @@ val bind_class_instance_super : Context.t -> Type.t -> ALoc.t -> unit
 
 val bind_class_static_super : Context.t -> Type.t -> ALoc.t -> unit
 
+val bind_class_self_type : Context.t -> Type.t -> ALoc.t -> unit
+
 val init_var : Context.t -> use_op:Type.use_op -> Type.t -> ALoc.t -> unit
 
 val init_let : Context.t -> use_op:Type.use_op -> Type.t -> ALoc.t -> unit
@@ -95,8 +97,6 @@ val has_hint : Context.t -> ALoc.t -> bool
 val get_hint : Context.t -> ALoc.t -> Type.lazy_hint_t
 
 val get_var : ?lookup_mode:LookupMode.t -> Context.t -> string -> ALoc.t -> Type.t
-
-val get_module_exports : Context.t -> ALoc.t -> Type.t
 
 val get_var_declared_type :
   ?lookup_mode:LookupMode.t ->
@@ -134,11 +134,11 @@ val query_var :
   Type.t
 
 val predicate_refinement_maps :
-  Context.t -> ALoc.t -> (Reason.t * Type.predicate Key_map.t * Type.predicate Key_map.t) option
+  Context.t ->
+  ALoc.t ->
+  (Reason.t * (Type.predicate Key_map.t * Type.predicate Key_map.t) Lazy.t) option
 
 val set_var : Context.t -> use_op:Type.use_op -> string -> Type.t -> ALoc.t -> unit
-
-val set_module_exports : Context.t -> Type.t -> unit
 
 val get_refinement : Context.t -> Key.t -> ALoc.t -> Type.t option
 
@@ -147,7 +147,9 @@ val discriminant_after_negated_cases :
 
 val get_next : Context.t -> ALoc.t -> Type.t
 
-val check_readable : Context.t -> Env_api.def_loc_type -> ALoc.t -> unit
+val checked_find_loc_env_write : Context.t -> Env_api.def_loc_type -> ALoc.t -> Type.t
+
+val checked_find_loc_env_write_opt : Context.t -> Env_api.def_loc_type -> ALoc.t -> Type.t option
 
 val resolve_env_entry :
   use_op:Type.use_op ->
@@ -157,9 +159,6 @@ val resolve_env_entry :
   Env_api.def_loc_type ->
   ALoc.t ->
   unit
-
-val unify_write_entry :
-  Context.t -> use_op:Type.use_op -> Type.t -> Env_api.def_loc_type -> ALoc.t -> unit
 
 val provider_type_for_def_loc :
   ?intersect:bool -> Context.t -> Loc_env.t -> Env_api.Provider_api.L.t -> Type.t

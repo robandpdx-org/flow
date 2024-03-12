@@ -51,9 +51,7 @@ let parse_content file content =
     in
     Error converted
   else
-    let (fsig, _tolerable_errors) =
-      File_sig.program ~file_key:file ~ast ~opts:File_sig.default_opts
-    in
+    let fsig = File_sig.program ~file_key:file ~ast ~opts:File_sig.default_opts in
     Ok (ast, fsig)
 
 let array_of_list f lst = Array.of_list (List.map f lst)
@@ -94,6 +92,8 @@ let load_lib_files files =
       exact_by_default = true;
       enable_enums = true;
       enable_component_syntax = true;
+      enable_ts_syntax = true;
+      hooklike_functions = true;
       casting_syntax = Options.CastingSyntax.Both;
       for_builtins = true;
       locs_to_dirtify = [];
@@ -119,13 +119,16 @@ let stub_metadata ~root ~checked =
     babel_loose_array_spread = false;
     casting_syntax = Options.CastingSyntax.Both;
     component_syntax = true;
-    component_syntax_includes = [];
-    react_rules = [];
+    hooklike_functions = true;
+    hooklike_functions_includes = [];
+    react_rules =
+      Options.
+        [ValidateRefAccessDuringRender; DeepReadOnlyProps; DeepReadOnlyHookReturns; RulesOfHooks];
     react_rules_always = false;
+    enable_as_const = false;
     enable_const_params = false;
     enable_enums = true;
     enable_relay_integration = false;
-    enforce_strict_call_arity = true;
     exact_by_default = true;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -136,18 +139,19 @@ let stub_metadata ~root ~checked =
     max_trace_depth = 0;
     max_workers = 0;
     missing_module_generators = [];
+    namespaces = false;
     react_runtime = Options.ReactRuntimeAutomatic;
     recursion_limit = 10000;
+    relay_integration_esmodules = false;
     relay_integration_excludes = [];
     relay_integration_module_prefix = None;
     relay_integration_module_prefix_includes = [];
-    renders_type_validation = true;
-    renders_type_validation_includes = [];
     root;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.of_list ["$FlowFixMe"; "$FlowIssue"; "$FlowIgnore"; "$FlowExpectedError"];
+    ts_syntax = true;
     use_mixed_in_catch_variables = false;
   }
 
@@ -247,9 +251,10 @@ let infer_and_merge ~root filename js_config_object docblock ast file_sig =
   resolved_requires :=
     SMap.mapi
       (fun mref _locs ->
-        let m_name = Reason.internal_module_name mref in
         let builtins = Context.builtins cx in
-        Builtins.get_builtin builtins m_name ~on_missing:(fun () -> Error m_name))
+        match Builtins.get_builtin_module_opt builtins mref with
+        | Some t -> Ok t
+        | None -> Error (Reason.internal_module_name mref))
       (File_sig.require_loc_map file_sig);
   (* infer ast *)
   let (_, { Flow_ast.Program.all_comments = comments; _ }) = ast in
@@ -261,7 +266,7 @@ let infer_and_merge ~root filename js_config_object docblock ast file_sig =
     Merge_js.get_lint_severities metadata strict_mode severities
   in
   let typed_ast = Type_inference_js.infer_ast cx filename comments ast ~lint_severities in
-  Merge_js.post_merge_checks cx ast metadata;
+  Merge_js.post_merge_checks cx ast typed_ast metadata;
   Context.reset_errors cx (Flow_error.post_process_errors (Context.errors cx));
   (cx, typed_ast)
 
@@ -376,6 +381,7 @@ let infer_type filename content line col js_config_object : Loc.t * (string, str
         ~typed_ast
         ~verbose_normalizer:false
         ~max_depth:50
+        ~no_typed_ast_for_imports:false
         loc
     in
     begin

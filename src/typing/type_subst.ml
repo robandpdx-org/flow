@@ -41,9 +41,9 @@ let visitor =
         in
         let { free; _ } = self#type_ cx pole { free; bound } inner in
         { free; bound = orig_bound }
-      | ThisClassT (_, t, _, this_name) ->
+      | ThisInstanceT (_, t, _, this_name) ->
         let { free; _ } =
-          self#type_ cx pole { free; bound = Subst_name.Set.add this_name bound } t
+          self#instance_type cx pole { free; bound = Subst_name.Set.add this_name bound } t
         in
         { free; bound }
       | _ -> super#type_ cx pole { bound; free } t
@@ -98,7 +98,8 @@ let free_var_finder cx ?(bound = Subst_name.Set.empty) t =
 let new_name name fvs =
   let (ct, n) =
     match name with
-    | Subst_name.Synthetic (n, _) -> failwith (Utils_js.spf "Cannot rename synthetic name %s" n)
+    | Subst_name.Synthetic { name = n; _ } ->
+      failwith (Utils_js.spf "Cannot rename synthetic name %s" n)
     | Subst_name.Name n -> (0, n)
     | Subst_name.Id (ct, n) -> (ct, n)
   in
@@ -161,7 +162,7 @@ let union_ident_map_and_dedup =
 
 let substituter =
   object (self)
-    inherit [replacement Subst_name.Map.t * bool * use_op option] Type_mapper.t as super
+    inherit [replacement Subst_name.Map.t * bool * bool * use_op option] Type_mapper.t as super
 
     val mutable change_id = false
 
@@ -199,12 +200,12 @@ let substituter =
 
     method exports cx map_cx id =
       let exps = Context.find_exports cx id in
-      let map_named_symbol ({ name_loc; preferred_def_locs; is_type_only_export; type_ } as orig) =
+      let map_named_symbol ({ name_loc; preferred_def_locs; type_ } as orig) =
         let type_' = self#type_ cx map_cx type_ in
         if type_ == type_' then
           orig
         else
-          { name_loc; preferred_def_locs; is_type_only_export; type_ = type_' }
+          { name_loc; preferred_def_locs; type_ = type_' }
       in
       let exps' = NameUtils.Map.ident_map map_named_symbol exps in
       if exps == exps' then
@@ -213,13 +214,13 @@ let substituter =
         Context.make_export_map cx exps'
 
     method! type_ cx map_cx t =
-      let (map, force, use_op) = map_cx in
+      let (map, force, placeholder_no_infer, use_op) = map_cx in
       if Subst_name.Map.is_empty map then
         t
       else
         let t_out =
           match t with
-          | GenericT { name = Subst_name.Synthetic (name, ids); reason; _ } ->
+          | GenericT { name = Subst_name.Synthetic { name; op_kind = _; ts = ids }; reason; _ } ->
             if Base.List.exists ~f:(fun name -> Subst_name.Map.mem name map) ids then
               failwith
                 (Utils_js.spf
@@ -229,23 +230,27 @@ let substituter =
                 )
             else
               super#type_ cx map_cx t
-          | GenericT ({ reason = tp_reason; name; _ } as gen) ->
+          | GenericT ({ reason = tp_reason; name; no_infer; _ } as gen) ->
             let annot_loc = loc_of_reason tp_reason in
             begin
               match Subst_name.Map.find_opt name map with
               | None -> super#type_ cx map_cx t
               | Some (TypeSubst (param_t, _)) ->
                 change_id <- true;
-                (match (obj_reachable_targs, param_t) with
-                | (_, GenericT _) ->
-                  mod_reason_of_t
-                    (fun param_reason ->
-                      annot_reason ~annot_loc @@ repos_reason annot_loc param_reason)
+                if placeholder_no_infer && no_infer then
+                  Context.mk_placeholder cx (TypeUtil.reason_of_t param_t)
+                else (
+                  match (obj_reachable_targs, param_t) with
+                  | (_, GenericT _) ->
+                    mod_reason_of_t
+                      (fun param_reason ->
+                        annot_reason ~annot_loc @@ repos_reason annot_loc param_reason)
+                      param_t
+                  | (Some targs, OpenT _) ->
+                    obj_reachable_targs <- Some ((param_t, Polarity.Neutral) :: targs);
                     param_t
-                | (Some targs, OpenT _) ->
-                  obj_reachable_targs <- Some ((param_t, Polarity.Neutral) :: targs);
-                  param_t
-                | _ -> param_t)
+                  | _ -> param_t
+                )
               | Some (AlphaRename name') ->
                 let t = GenericT { gen with name = name' } in
                 super#type_ cx map_cx t
@@ -256,12 +261,16 @@ let substituter =
             let (xs, map, changed) =
               Nel.fold_left
                 (fun (xs, map, changed) typeparam ->
-                  let bound = self#type_ cx (map, force, use_op) typeparam.Type.bound in
+                  let bound =
+                    self#type_ cx (map, force, placeholder_no_infer, use_op) typeparam.Type.bound
+                  in
                   let default =
                     match typeparam.default with
                     | None -> None
                     | Some default ->
-                      let default_ = self#type_ cx (map, force, use_op) default in
+                      let default_ =
+                        self#type_ cx (map, force, placeholder_no_infer, use_op) default
+                      in
                       if default_ == default then
                         typeparam.default
                       else
@@ -277,7 +286,7 @@ let substituter =
             in
             let xs = xs |> List.rev |> Nel.of_list in
             let xs = Base.Option.value_exn xs in
-            let inner_ = self#type_ cx (map, false, None) inner in
+            let inner_ = self#type_ cx (map, false, placeholder_no_infer, None) inner in
             let changed = changed || inner_ != inner in
             let id =
               if change_id then
@@ -290,14 +299,14 @@ let substituter =
               DefT (reason, PolyT { tparams_loc; tparams = xs; t_out = inner_; id })
             else
               t
-          | ThisClassT (reason, this, i, this_name) ->
+          | ThisInstanceT (r, this, i, this_name) ->
             let (name, map) = avoid_capture map this_name in
-            let this_ = self#type_ cx (map, force, use_op) this in
+            let this_ = self#instance_type cx (map, force, placeholder_no_infer, use_op) this in
             if this_ == this && name == this_name then
               t
             else
-              ThisClassT (reason, this_, i, name)
-          | TypeAppT { reason; use_op = op; type_; targs; use_desc } ->
+              ThisInstanceT (r, this_, i, name)
+          | TypeAppT { reason; use_op = op; type_; targs; from_value; use_desc } ->
             let type_' = self#type_ cx map_cx type_ in
             let targs' = ListUtils.ident_map (self#type_ cx map_cx) targs in
             if type_' == type_ && targs' == targs then
@@ -308,7 +317,7 @@ let substituter =
                * so we can point at the op which instantiated the types that
                * were substituted. *)
               let use_op = Base.Option.value use_op ~default:op in
-              TypeAppT { reason; use_op; type_ = type_'; targs = targs'; use_desc }
+              TypeAppT { reason; use_op; type_ = type_'; targs = targs'; from_value; use_desc }
           | EvalT (x, TypeDestructorT (op, r, d), _) ->
             let x' = self#type_ cx map_cx x in
             let d' = self#destructor cx map_cx d in
@@ -336,9 +345,9 @@ let substituter =
             mod_reason_of_t (Reason.replace_desc_reason desc) t_out
           | _ -> t_out
 
-    method! predicate cx (map, force, use_op) p =
+    method! predicate cx (map, force, placeholder_no_infer, use_op) p =
       match p with
-      | LatentP _ -> super#predicate cx (map, force, use_op) p
+      | LatentP _ -> super#predicate cx (map, force, placeholder_no_infer, use_op) p
       | p -> p
 
     method! obj_type cx map_cx t =
@@ -368,25 +377,27 @@ let substituter =
         (Some name, map)
 
     method! destructor cx map_cx t =
-      let (map, _, _) = map_cx in
+      let (map, _, placeholder_no_infer, _) = map_cx in
       match t with
       | ConditionalType { distributive_tparam_name; infer_tparams; extends_t; true_t; false_t } ->
         let (distributive_tparam_name, map) =
           self#distributive_tparam_name distributive_tparam_name map
         in
-        let false_t' = self#type_ cx (map, false, None) false_t in
+        let false_t' = self#type_ cx (map, false, placeholder_no_infer, None) false_t in
         let (tparams_rev, map, changed) =
           Base.List.fold
             infer_tparams
             ~init:([], map, false)
             ~f:(fun (xs, map, changed) typeparam ->
-              let bound = self#type_ cx (map, false, None) typeparam.Type.bound in
+              let bound =
+                self#type_ cx (map, false, placeholder_no_infer, None) typeparam.Type.bound
+              in
               let (name, map) = avoid_capture map typeparam.name in
               ({ typeparam with bound; name } :: xs, map, changed || bound != typeparam.bound)
           )
         in
-        let extends_t' = self#type_ cx (map, false, None) extends_t in
-        let true_t' = self#type_ cx (map, false, None) true_t in
+        let extends_t' = self#type_ cx (map, false, placeholder_no_infer, None) extends_t in
+        let true_t' = self#type_ cx (map, false, placeholder_no_infer, None) true_t in
         if changed || extends_t != extends_t' || true_t != true_t' || false_t != false_t' then
           ConditionalType
             {
@@ -402,11 +413,11 @@ let substituter =
         let (distributive_tparam_name, map) =
           self#distributive_tparam_name distributive_tparam_name map
         in
-        let property_type' = self#type_ cx (map, false, None) property_type in
+        let property_type' = self#type_ cx (map, false, placeholder_no_infer, None) property_type in
         let homomorphic' =
           match homomorphic with
           | SemiHomomorphic t ->
-            let t' = self#type_ cx (map, false, None) t in
+            let t' = self#type_ cx (map, false, placeholder_no_infer, None) t in
             if t' == t then
               homomorphic
             else
@@ -432,10 +443,14 @@ let substituter =
     method eval_id _cx _map_cx _id = assert false
   end
 
-let subst cx ?use_op ?(force = true) map ty =
+let subst cx ?use_op ?(force = true) ?(placeholder_no_infer = false) map ty =
   let map = Subst_name.Map.map (fun t -> TypeSubst (t, free_var_finder cx t)) map in
-  substituter#type_ cx (map, force, use_op) ty
+  substituter#type_ cx (map, force, placeholder_no_infer, use_op) ty
 
-let subst_destructor cx ?use_op ?(force = true) map des =
+let subst_destructor cx ?use_op ?(force = true) ?(placeholder_no_infer = false) map des =
   let map = Subst_name.Map.map (fun t -> TypeSubst (t, free_var_finder cx t)) map in
-  substituter#destructor cx (map, force, use_op) des
+  substituter#destructor cx (map, force, placeholder_no_infer, use_op) des
+
+let subst_instance_type cx ?use_op ?(force = true) ?(placeholder_no_infer = false) map instance_t =
+  let map = Subst_name.Map.map (fun t -> TypeSubst (t, free_var_finder cx t)) map in
+  substituter#instance_type cx (map, force, placeholder_no_infer, use_op) instance_t

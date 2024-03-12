@@ -27,13 +27,14 @@ let metadata =
     babel_loose_array_spread = false;
     casting_syntax = Options.CastingSyntax.Colon;
     component_syntax = true;
-    component_syntax_includes = [];
+    hooklike_functions_includes = [];
+    hooklike_functions = true;
     react_rules = [];
     react_rules_always = false;
+    enable_as_const = false;
     enable_const_params = false;
     enable_enums = true;
     enable_relay_integration = false;
-    enforce_strict_call_arity = true;
     exact_by_default = false;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -44,18 +45,19 @@ let metadata =
     max_trace_depth = 0;
     max_workers = 0;
     missing_module_generators = [];
+    namespaces = false;
     react_runtime = Options.ReactRuntimeClassic;
     recursion_limit = 10000;
+    relay_integration_esmodules = false;
     relay_integration_excludes = [];
     relay_integration_module_prefix = None;
     relay_integration_module_prefix_includes = [];
-    renders_type_validation = false;
-    renders_type_validation_includes = [];
     root = File_path.dummy_path;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.empty;
+    ts_syntax = true;
     use_mixed_in_catch_variables = false;
   }
 
@@ -95,10 +97,13 @@ let before_and_after_stmts file_name =
     in
     Builtins.of_name_map
       ~mapper:Base.Fn.id
-      (NameUtils.Map.singleton
-         (Reason.OrdinaryName "Object")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-      )
+      ~values:
+        (SMap.singleton
+           "Object"
+           (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+        )
+      ~types:SMap.empty
+      ~modules:SMap.empty
   in
   let cx =
     let aloc_table = lazy (ALoc.empty_table file_key) in

@@ -135,6 +135,12 @@ function custom_ast_types(fork) {
       ),
     );
 
+  def('DeclareNamespace')
+    .bases('Declaration')
+    .build('id', 'body')
+    .field('id', def('Identifier'))
+    .field('body', def('BlockStatement'));
+
   def('DeclareComponent')
     .bases('Declaration')
     .build('id', 'tparams', 'params', 'rest', 'return')
@@ -183,6 +189,12 @@ function custom_ast_types(fork) {
     .field('params', [or(def('ComponentParameter'), def('RestElement'))])
     .field('rendersType', or(def('TypeOperator'), null))
     .field('body', def('BlockStatement'));
+
+  def('HookDeclaration').bases('FunctionDeclaration');
+
+  def('HookTypeAnnotation').bases('FunctionTypeAnnotation');
+
+  def('DeclareHook').bases('DeclareFunction');
 
   def('ComponentParameter')
     .build('name', 'local', 'shorthand')

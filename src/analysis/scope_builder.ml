@@ -589,7 +589,7 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
 
       method! declare_module _loc m =
         let open Ast.Statement.DeclareModule in
-        let { id = _; body; kind = _; comments = _ } = m in
+        let { id = _; body; comments = _ } = m in
         let (loc, body) = body in
         let bindings =
           let hoist = new hoister ~flowmin_compatibility ~enable_enums ~with_types in
@@ -598,6 +598,19 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
         in
         this#with_bindings loc bindings (fun () -> run (this#block loc) body) ();
         m
+
+      method! declare_namespace _loc n =
+        let open Ast.Statement.DeclareNamespace in
+        let { id; body; comments = _ } = n in
+        ignore @@ this#pattern_identifier ~kind:Ast.Variable.Const id;
+        let (loc, body) = body in
+        let bindings =
+          let hoist = new hoister ~flowmin_compatibility ~enable_enums ~with_types in
+          run (hoist#block loc) body;
+          hoist#acc
+        in
+        this#with_bindings loc bindings (fun () -> run (this#block loc) body) ();
+        n
 
       method private scoped_type_params ?(hoist_op = (fun f -> f ())) ~in_tparam_scope tparams =
         let open Ast.Type.TypeParams in
@@ -611,7 +624,11 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
             hoist_op (fun () -> ignore @@ this#type_annotation_hint bound);
             ignore @@ this#variance_opt variance;
             hoist_op (fun () -> ignore @@ Base.Option.map ~f:this#type_ default);
-            let bindings = Bindings.(singleton (name, Bindings.Type { imported = false })) in
+            let bindings =
+              Bindings.(
+                singleton (name, Bindings.Type { imported = false; type_only_namespace = false })
+              )
+            in
             this#with_bindings
               loc
               bindings
@@ -639,7 +656,9 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
           );
           let bindings =
             Base.List.fold tps ~init:Bindings.empty ~f:(fun bindings (_, { name; _ }) ->
-                Bindings.add (name, Bindings.Type { imported = false }) bindings
+                Bindings.add
+                  (name, Bindings.Type { imported = false; type_only_namespace = false })
+                  bindings
             )
           in
           this#with_bindings
@@ -786,6 +805,7 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
             tparams;
             async = _;
             generator;
+            hook = _;
             predicate;
             sig_loc = _;
             comments = _;
@@ -838,6 +858,7 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
             tparams;
             async = _;
             generator;
+            hook = _;
             predicate;
             sig_loc = _;
             comments = _;
@@ -912,6 +933,7 @@ module Make (L : Loc_sig.S) (Api : Scope_api_sig.S with module L = L) :
           params = (_, { Params.this_; params = ps; rest = rpo; comments = _ });
           return;
           tparams;
+          hook = _;
           comments = _;
         } =
           ft

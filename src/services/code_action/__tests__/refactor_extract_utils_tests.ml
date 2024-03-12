@@ -37,13 +37,14 @@ let stub_metadata ~root ~checked =
     babel_loose_array_spread = false;
     casting_syntax = Options.CastingSyntax.Colon;
     component_syntax = false;
-    component_syntax_includes = [];
+    hooklike_functions_includes = [];
+    hooklike_functions = true;
     react_rules = [];
     react_rules_always = false;
+    enable_as_const = false;
     enable_const_params = false;
     enable_enums = true;
     enable_relay_integration = false;
-    enforce_strict_call_arity = true;
     exact_by_default = false;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -54,26 +55,25 @@ let stub_metadata ~root ~checked =
     max_trace_depth = 0;
     max_workers = 0;
     missing_module_generators = [];
+    namespaces = false;
     react_runtime = Options.ReactRuntimeClassic;
     recursion_limit = 10000;
+    relay_integration_esmodules = false;
     relay_integration_excludes = [];
     relay_integration_module_prefix = None;
     relay_integration_module_prefix_includes = [];
-    renders_type_validation = false;
-    renders_type_validation_includes = [];
     root;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.empty;
+    ts_syntax = true;
     use_mixed_in_catch_variables = false;
   }
 
 let dummy_filename = File_key.SourceFile ""
 
-let file_sig_of_ast ast =
-  let (file_sig, _) = File_sig.program ~file_key:dummy_filename ~ast ~opts:File_sig.default_opts in
-  file_sig
+let file_sig_of_ast ast = File_sig.program ~file_key:dummy_filename ~ast ~opts:File_sig.default_opts
 
 let dummy_context () =
   let root = File_path.dummy_path in
@@ -82,43 +82,40 @@ let dummy_context () =
     let desc = Reason.RCustom "Explicit any used in refactor_extract_functioon tests" in
     Reason.mk_reason desc loc
   in
-  let builtins =
-    (* Add builtins that will be used by tests. *)
-    NameUtils.Map.empty
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "console")
+  (* Add builtins that will be used by tests. *)
+  let builtins_values =
+    SMap.empty
+    |> SMap.add "console" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add "Object" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add "Generator" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add
+         "AsyncGenerator"
          (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "Object")
+    |> SMap.add "Promise" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add "promise" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add "$await" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
+    |> SMap.add
+         "$IterableOrAsyncIterableInternal"
          (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "Generator")
+  in
+  let builtin_types =
+    SMap.empty
+    |> SMap.add
+         "$AsyncIterable"
          (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "AsyncGenerator")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "Promise")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "promise")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "$await")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "$AsyncIterable")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> NameUtils.Map.add
-         (Reason.OrdinaryName "$Iterable")
-         (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
-    |> Builtins.of_name_map ~mapper:Base.Fn.id
+    |> SMap.add "$Iterable" (lazy (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))))
   in
   let ccx = Context.make_ccx () in
   let metadata = stub_metadata ~root ~checked:true in
   let aloc_table = lazy (ALoc.empty_table dummy_filename) in
   let resolve_require _ = Ok (Type.AnyT (reason, Type.AnyError (Some Type.UnresolvedName))) in
-  Context.make ccx metadata dummy_filename aloc_table resolve_require (fun _ -> builtins)
+  Context.make ccx metadata dummy_filename aloc_table resolve_require (fun _ ->
+      Builtins.of_name_map
+        ~mapper:Base.Fn.id
+        ~values:builtins_values
+        ~types:builtin_types
+        ~modules:SMap.empty
+  )
 
 let typed_ast_of_ast cx ast =
   let (_, { Flow_ast.Program.all_comments = comments; _ }) = ast in

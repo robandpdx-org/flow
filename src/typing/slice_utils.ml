@@ -18,6 +18,7 @@ let mk_object_type
     ~invalidate_aliases
     ~interface
     ~reachable_targs
+    ~kind
     flags
     call
     id
@@ -61,9 +62,9 @@ let mk_object_type
         ~default:(t, def_reason)
         exact_reason
   in
-  Generic.make_spread_id generics
+  Generic.make_op_id kind generics
   |> Base.Option.value_map ~default:t ~f:(fun id ->
-         GenericT { bound = t; reason; id; name = Generic.subst_name_of_id id }
+         GenericT { bound = t; reason; id; name = Generic.subst_name_of_id id; no_infer = false }
      )
 
 let type_optionality_and_missing_property { Object.prop_t; _ } =
@@ -564,6 +565,7 @@ let spread_mk_object
     ~invalidate_aliases:true
     ~interface:None
     ~reachable_targs
+    ~kind:Subst_name.Spread
     flags
     call
     id
@@ -749,6 +751,7 @@ let check_config2 cx pmap { Object.reason; props; flags; generics; interface = _
          ~invalidate_aliases:true
          ~interface:None
          ~reachable_targs
+         ~kind:Subst_name.CheckConfig
          flags
          call
          id
@@ -1112,6 +1115,7 @@ let object_rest
       ~interface:None
         (* Keep the reachable targs from o1, because we don't know whether all appearences of them were removed *)
       ~reachable_targs
+      ~kind:Subst_name.Spread
       flags
       call
       id
@@ -1172,6 +1176,7 @@ let object_read_only =
       ~invalidate_aliases:false
       ~interface
       ~reachable_targs
+      ~kind:Subst_name.ReadOnly
       flags
       call
       id
@@ -1219,12 +1224,18 @@ let object_update_optionality kind =
       | (RRequiredOf _, `Required) -> r
       | _ -> reason
     in
+    let kind =
+      match kind with
+      | `Partial -> Subst_name.Partial
+      | `Required -> Subst_name.Required
+    in
     mk_object_type
       ~def_reason
       ~exact_reason:(Some reason)
       ~invalidate_aliases:false
       ~interface
       ~reachable_targs
+      ~kind
       flags
       call
       id
@@ -1420,6 +1431,8 @@ let resolve
         loop
           (mod_reason_of_t (fun _ -> reason) bound)
           (Generic.spread_append (Generic.make_spread id) ls)
+      | ThisInstanceT (r, i, is_this, this_name) ->
+        (ls, Flow_js_utils.fix_this_instance cx r (r, i, is_this, this_name))
       | _ -> (ls, t)
     in
     loop t Generic.spread_empty
@@ -1665,7 +1678,15 @@ let map_object
   let mk_prop_type key_t prop_optional =
     (* We persist the original use_op here so that errors involving the typeapp are positioned
      * at the use site and not the typeapp site *)
-    let t = typeapp_with_use_op ~use_desc:false (reason_of_t poly_prop) use_op poly_prop [key_t] in
+    let t =
+      typeapp_with_use_op
+        ~from_value:false
+        ~use_desc:false
+        (reason_of_t poly_prop)
+        use_op
+        poly_prop
+        [key_t]
+    in
     match mapped_type_optionality with
     | MakeOptional -> optional t
     | RemoveOptional ->
@@ -1785,6 +1806,7 @@ let map_object
     ~invalidate_aliases:true
     ~interface
     ~reachable_targs
+    ~kind:Subst_name.Mapped
     flags
     call
     id

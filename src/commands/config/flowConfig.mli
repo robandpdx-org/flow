@@ -68,6 +68,8 @@ val all : config -> bool option
 
 val autoimports : config -> bool option
 
+val autoimports_min_characters : config -> int option
+
 val autoimports_ranked_by_usage : config -> bool option
 
 val autoimports_ranked_by_usage_boost_exact_match_min_length : config -> int option
@@ -76,25 +78,25 @@ val automatic_require_default : config -> bool option
 
 val babel_loose_array_spread : config -> bool option
 
-val batch_lsp_request_processing : config -> bool
+val blocking_worker_communication : config -> bool
 
 val casting_syntax : config -> Options.CastingSyntax.t option
 
 val channel_mode : config -> [ `pipe | `socket ] option
 
-val component_syntax : config -> Options.component_syntax
+val component_syntax : config -> bool
 
-val component_syntax_includes : config -> string list
+val hooklike_functions_includes : config -> string list
+
+val hooklike_functions : config -> bool
 
 val react_rules : config -> Options.react_rules list
 
-val direct_dependent_files_fix : config -> bool option
-
 val emoji : config -> bool option
 
-val enable_const_params : config -> bool option
+val enable_as_const : config -> bool option
 
-val enforce_strict_call_arity : config -> bool
+val enable_const_params : config -> bool option
 
 val enums : config -> bool
 
@@ -156,8 +158,6 @@ val include_warnings : config -> bool
 
 val lazy_mode : config -> lazy_mode option
 
-val libdef_in_checking : config -> bool
-
 (* global defaults for lint suppressions and strict mode *)
 val lint_severities : config -> Severity.severity LintSettings.t
 
@@ -193,7 +193,12 @@ val multi_platform : config -> bool option
 
 val multi_platform_extensions : config -> string list
 
+val multi_platform_ambient_supports_platform_directory_overrides :
+  config -> (string * string list) list
+
 val munge_underscores : config -> bool
+
+val namespaces : config -> bool
 
 val no_flowlib : config -> bool
 
@@ -205,23 +210,19 @@ val node_resolver_dirnames : config -> string list
 
 val node_resolver_root_relative_dirnames : config -> string list
 
-val precise_dependents : config -> bool
-
 val react_runtime : config -> Options.react_runtime
 
 val recursion_limit : config -> int
 
 val relay_integration : config -> bool
 
+val relay_integration_esmodules : config -> bool
+
 val relay_integration_excludes : config -> string list
 
 val relay_integration_module_prefix : config -> string option
 
 val relay_integration_module_prefix_includes : config -> string list
-
-val renders_type_validation : config -> bool
-
-val renders_type_validation_includes : config -> string list
 
 val required_version : config -> string option
 
@@ -244,6 +245,8 @@ val strict_mode : config -> StrictModeSettings.t
 val suppress_types : config -> SSet.t
 
 val traces : config -> int
+
+val ts_syntax : config -> bool
 
 val use_mixed_in_catch_variables : config -> bool option
 

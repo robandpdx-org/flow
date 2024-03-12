@@ -29,14 +29,11 @@ type react_runtime =
   | ReactRuntimeAutomatic
   | ReactRuntimeClassic
 
-type component_syntax =
-  | Parsing
-  | FullSupport
-
 type react_rules =
   | ValidateRefAccessDuringRender
   | DeepReadOnlyProps
   | DeepReadOnlyHookReturns
+  | RulesOfHooks
 
 type format = {
   opt_bracket_spacing: bool;
@@ -68,24 +65,25 @@ end
 
 type t = {
   opt_all: bool;
+  opt_as_const: bool;
   opt_any_propagation: bool;
   opt_autoimports: bool;
+  opt_autoimports_min_characters: int;
   opt_autoimports_ranked_by_usage: bool;
   opt_autoimports_ranked_by_usage_boost_exact_match_min_length: int option;
   opt_automatic_require_default: bool;
   opt_babel_loose_array_spread: bool;
-  opt_batch_lsp_request_processing: bool;
+  opt_blocking_worker_communication: bool;
   opt_casting_syntax: CastingSyntax.t;
   opt_channel_mode: [ `pipe | `socket ];
-  opt_component_syntax: component_syntax;
-  opt_component_syntax_includes: string list;
+  opt_component_syntax: bool;
+  opt_hooklike_functions_includes: string list;
+  opt_hooklike_functions: bool;
   opt_react_rules: react_rules list;
   opt_debug: bool;
-  opt_direct_dependent_files_fix: bool;
   opt_enable_const_params: bool;
   opt_enable_relay_integration: bool;
   opt_enabled_rollouts: string SMap.t;
-  opt_enforce_strict_call_arity: bool;
   opt_enums: bool;
   opt_estimate_recheck_time: bool;
   opt_exact_by_default: bool;
@@ -108,7 +106,6 @@ type t = {
   opt_include_suppressions: bool;
   opt_include_warnings: bool;
   opt_lazy_mode: bool;
-  opt_libdef_in_checking: bool;
   opt_lint_severities: Severity.severity LintSettings.t;
   opt_log_file: File_path.t;
   opt_log_saving: log_saving SMap.t;
@@ -124,19 +121,18 @@ type t = {
   opt_module_name_mappers: (Str.regexp * string) list;
   opt_modules_are_use_strict: bool;
   opt_munge_underscores: bool;
+  opt_namespaces: bool;
   opt_node_main_fields: string list;
   opt_node_resolver_allow_root_relative: bool;
   opt_node_resolver_root_relative_dirnames: string list;
-  opt_precise_dependents: bool;
   opt_profile: bool;
   opt_quiet: bool;
   opt_react_runtime: react_runtime;
   opt_recursion_limit: int;
+  opt_relay_integration_esmodules: bool;
   opt_relay_integration_excludes: Str.regexp list;
   opt_relay_integration_module_prefix: string option;
   opt_relay_integration_module_prefix_includes: Str.regexp list;
-  opt_renders_type_validation: bool;
-  opt_renders_type_validation_includes: string list;
   opt_root: File_path.t;
   opt_root_name: string option;
   opt_saved_state_allow_reinit: bool;
@@ -153,6 +149,7 @@ type t = {
   opt_suppress_types: SSet.t;
   opt_temp_dir: string;
   opt_traces: int;
+  opt_ts_syntax: bool;
   opt_use_mixed_in_catch_variables: bool;
   opt_verbose: Verbose.t option;
   opt_wait_for_recheck: bool;
@@ -161,9 +158,13 @@ type t = {
 
 let all opts = opts.opt_all
 
+let as_const opts = opts.opt_as_const
+
 let any_propagation opts = opts.opt_any_propagation
 
 let autoimports opts = opts.opt_autoimports
+
+let autoimports_min_characters opts = opts.opt_autoimports_min_characters
 
 let autoimports_ranked_by_usage opts = opts.opt_autoimports_ranked_by_usage
 
@@ -174,7 +175,7 @@ let automatic_require_default opts = opts.opt_automatic_require_default
 
 let babel_loose_array_spread opts = opts.opt_babel_loose_array_spread
 
-let batch_lsp_request_processing opts = opts.opt_batch_lsp_request_processing
+let blocking_worker_communication opts = opts.opt_blocking_worker_communication
 
 let casting_syntax opts = opts.opt_casting_syntax
 
@@ -182,18 +183,14 @@ let channel_mode opts = opts.opt_channel_mode
 
 let component_syntax opts = opts.opt_component_syntax
 
-let typecheck_component_syntax opts =
-  match opts.opt_component_syntax with
-  | Parsing -> false
-  | FullSupport -> true
+let hooklike_functions opts = opts.opt_hooklike_functions
 
-let component_syntax_includes opts = opts.opt_component_syntax_includes
+let hooklike_functions_includes opts = opts.opt_hooklike_functions_includes
 
-let typecheck_component_syntax_in_file opts file =
-  typecheck_component_syntax opts
-  || File_key.is_lib_file file
+let hooklike_functions_in_file opts file =
+  hooklike_functions opts
   || begin
-       match component_syntax_includes opts with
+       match hooklike_functions_includes opts with
        | [] -> false
        | dirs ->
          let filename = File_key.to_string file in
@@ -201,17 +198,16 @@ let typecheck_component_syntax_in_file opts file =
          List.exists (fun str -> Base.String.is_prefix ~prefix:str normalized_filename) dirs
      end
 
-let react_rules opts = opts.opt_react_rules
+let typecheck_component_syntax_in_file opts file =
+  component_syntax opts || File_key.is_lib_file file
 
-let direct_dependent_files_fix opts = opts.opt_direct_dependent_files_fix
+let react_rules opts = opts.opt_react_rules
 
 let enable_const_params opts = opts.opt_enable_const_params
 
 let enable_relay_integration opts = opts.opt_enable_relay_integration
 
 let enabled_rollouts opts = opts.opt_enabled_rollouts
-
-let enforce_strict_call_arity opts = opts.opt_enforce_strict_call_arity
 
 let enums opts = opts.opt_enums
 
@@ -259,8 +255,6 @@ let is_quiet opts = opts.opt_quiet
 
 let lazy_mode opts = opts.opt_lazy_mode
 
-let libdef_in_checking opts = opts.opt_libdef_in_checking
-
 let lint_severities opts = opts.opt_lint_severities
 
 let log_file opts = opts.opt_log_file
@@ -291,17 +285,19 @@ let module_system opts = opts.opt_module
 
 let modules_are_use_strict opts = opts.opt_modules_are_use_strict
 
+let namespaces opts = opts.opt_namespaces
+
 let node_main_fields opts = opts.opt_node_main_fields
 
 let node_resolver_allow_root_relative opts = opts.opt_node_resolver_allow_root_relative
 
 let node_resolver_root_relative_dirnames opts = opts.opt_node_resolver_root_relative_dirnames
 
-let precise_dependents opts = opts.opt_precise_dependents
-
 let react_runtime opts = opts.opt_react_runtime
 
 let recursion_limit opts = opts.opt_recursion_limit
+
+let relay_integration_esmodules opts = opts.opt_relay_integration_esmodules
 
 let relay_integration_excludes opts = opts.opt_relay_integration_excludes
 
@@ -309,10 +305,6 @@ let relay_integration_module_prefix opts = opts.opt_relay_integration_module_pre
 
 let relay_integration_module_prefix_includes opts =
   opts.opt_relay_integration_module_prefix_includes
-
-let renders_type_validation opts = opts.opt_renders_type_validation
-
-let renders_type_validation_includes opts = opts.opt_renders_type_validation_includes
 
 let root opts = opts.opt_root
 
@@ -351,6 +343,8 @@ let strict_mode opts = opts.opt_strict_mode
 let suppress_types opts = opts.opt_suppress_types
 
 let temp_dir opts = opts.opt_temp_dir
+
+let ts_syntax opts = opts.opt_ts_syntax
 
 let use_mixed_in_catch_variables opts = opts.opt_use_mixed_in_catch_variables
 

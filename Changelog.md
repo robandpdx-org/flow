@@ -1,3 +1,128 @@
+### 0.230.0
+
+Likely to cause new Flow errors:
+* We now put value exports and type exports into two different namespaces. It means that we will now consistently error on places where you try to import, re-export, or use a imported type as a value. This change also makes certain patterns that happen to work in the past no longer work, e.g.
+
+```
+// a.js
+export type Foo = string;
+// b.js
+const A = require('./a');
+module.exports = {...A};
+// c.js
+// previously allowed, no longer allowed
+import type {Foo} from './b';
+```
+
+* We have allowed function parameters to refer to each other for a while now. However, we didn't implement the analysis correctly for exported functions, which causes inconsistent behaviors. This is now fixed e.g.
+
+```
+// a.js
+// we incorrectly resolve x to refer to
+// be external to the function params,
+// which is a global in this case
+export function foo(x: string, y: typeof x) {}
+// b.js
+import {foo} from './a';
+foo("", 3); // no error before, errors now
+```
+
+* Previously, we allowed assignment to any globals, regardless of whether it's a type or value. Therefore, both were allowed in `Array = 3; $ReadOnlyArray = 2;` Now the latter is banned.
+* Flow now consistently bans referring a type-only global as value
+* Some bad annotations that cause `value-as-type` or `recursive-definition` errors will no longer affect which branch to take in overload resolution.
+
+New Features:
+* Flow now supports typeof with type arguments `type T = typeof foo<string>`. This syntax is supported in prettier since v3.1. If you previously enabled the flag `typeof_with_type_arguments=true`, you need to remove it.
+* Flow now supports explicit type arguments on JSX. e.g. `<Foo<string, _, number >propA='d' />`. Note that some type arguments can be inferred using the `_` syntax.
+* Flow now supports the same `NoInfer` intrinsic that will be available in TypeScript 5.4.
+* Under `experimental.ts_syntax=true`, Flow will
+  * Automatically translate TypeScript's readonly on tuple and array types into Flow equivalent `$ReadOnly<[...]>` and `$ReadOnlyArray<...>` without error.
+  * Automatically translate TypeScript's keyof into Flow equivalent `$Keys` without error. Note that there are behavior differences between `$Keys<>` and `keyof` right now ([flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCSww1wABABBbHAAA6UGxpOxMGIyGx9lMUAQ2IAvNiAOTMgDcxKRxOJmJxACFsQoGlA2CQ8QTiWTsZhKFSael6UzWRyoFyoMSWsZsQBpRnYgAk2uwtBIAB4+QA+FXMikQZnYrE660y+2O7UqmIgfImEhwaBBfIABisACYQwBOUMgJFAA), [TS](https://www.typescriptlang.org/play?ssl=7&ssc=2&pln=1&pc=1#code/MYGwhgzhAECC0G8BQ1XQGYHtMC5oQBcAnASwDsBzaAXmgHI6BuJAXySVEhgCFoBTAB4E+ZACYx4yNNABGYInkKlKNek1bsCATwAOfaAGlVAaz5bM6aN2Z0smOvjAESEdCT4wDNuUQcQnLm4ehsxAA)), so use it with caution.
+  * Automatically translate TypeScript's `unknown` `never` and `undefined` into Flow equivalent `mixed` `empty` and `void` without error.
+  * Support TypeScript's variance annotation `readonly` `in` `out`, `in out` without error.
+
+Misc:
+* `experimental.ts_syntax` is now always on in https://flow.org/try.
+
+### 0.229.2
+
+Misc:
+* Fixed a potential crash under the experimental flag `experimental.blocking_worker_communication=false`.
+
+### 0.229.1
+
+Misc:
+
+* Bug fixes in preparation of new feature rollout
+
+### 0.229.0
+
+Likely to cause new Flow errors:
+* `invalid-recursive-exported-annotation` will now have error code of `recursive-definition`.
+* Previously we would emit confusing errors when you try to use a value that has union types as a type. Now it will consistently emit `value-as-type` errors. ([example](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCGiWVGwAAIsdccQBhACMOOAAB0oDicTBkDjhCIZgBuSlIymUzG4bF4rkEwkAJjJlOptJx9lMUAQLKgbKglNs9jxOIAvDipDIcQB+ImkukC6UtYw4gCCKrxTJxAHpLTjavk4BA4rhaDj0pARI5-GhSqsjSZKBBKLx6RAAO50wq4GSNDDAw24-2BykxED5EwkB1QIL5AAMVn5-IA7FYcyAkUA)).
+* Unsupported statements like loops within `declare module` will no longer cause parse errors. Instead, they will be errored on during type checking.
+* `declare export type` and `declare export interface` statements in toplevel are no longer parser errors. Instead, they will now be errored during type checking.
+* Previous `toplevel-library-import` errors and `unsupported-statement-in-lib` errors will all have `unsupported-syntax` error code now.
+
+New Features:
+* We introduced `experimental.ts_syntax` flag that you can set to `true`. When this flag is on, Flow will no longer complain about certain TypeScript syntax, and will automatically turn them into the closest Flow equivalent types. Initially, we support the following: `Readonly`, `ReadonlyArray`, `ReadonlyMap`, `ReadonlySet`, `NonNullable`, and using `extends` to specify type parameter bounds. In the future, more kinds of types that we currently parse but error on might be added. (e.g. keyof). Please note that the support here is best effort. We make no guarantee that these types have the same semantics as those in TypeScript 100% of the time, but for common cases, it might be good enough for you.
+
+Notable bug fixes:
+* We now allow the use of saved state for [glean](https://glean.software/) indexer, if saved state is enabled in flowoconfig or CLI arguments.
+* Improved the way we compute contextual hints for spread arguments of calls (e.g. [try-Flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCGiWVGwAAJjjiqDRaAAhIQwH6UZA4gCC1DopPJJgA3AAdKAAZSk6QQVhglHCAGEclQBRANAAKKxS2lE3n8kTinYAdxxAFV0hIABwyujiwn0skUgCUJqZOIA9OacUroAByCQ4kz8ygEqC0HEiCAsGIgfImEhwaBBfIABisACZwwB2KwhkBIoA)).
+* In `declare module`, all the values will be auto-exported if we cannot decide whether the module is in CJS or ESM. However, support for `declare const` and `declare let` was missing. This has now been fixed.
+
+Misc:
+* Make `both` the default value for the .flowconfig `casting_syntax` option, if not supplied.
+
+### 0.228.0
+
+Likely to cause new Flow errors:
+* Some new errors might be raised when using `React.cloneElement` with polymorphic components. Eg. [try-Flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCAB0oGZGBBKBIAAQAKgJGBIBIASqxlASYJRwgSAOSeZSMgDcWKxSzJ5IAggAeAAqAD4CQoGlA2OSqV4rABhcK4nZ+fnAGDEZAEwW8AlWPUogn5CBwNii4BIzmSuq4KjYQ1UUmamXKAAkAFFSuYVS1jBAYATeTq1RqCfZTFAEDq9VYkcKOVAsc7vEtoNgPdgvRIABQYACUpOl1Ik7s9Fn5PuwfoDQfVEE1YfSkd1+rjBIA9G2CQBVMhsAlhMXUPEEnDqliJos2Ig7dOZnP5sn9tZVjBs9udnspfsQQf0ygjzR47CWpNT1OzizztcdrU5BEEgDucGGpJ4O5Me4JUAgD6xMRA+QmCQcDQEE+QAAxWAATFBADsVjgSASJAA). Note that React.cloneElement is [deprecated](https://react.dev/reference/react/cloneElement)
+* Nested `declare module` is no longer a parser error, but a type checking error
+* `declare module` is now explicitly banned in nested scope and outside of library definition files. It already does nothing under those contexts.
+
+New Features:
+* All kinds of imports are now supported in library definition files
+* We will no longer require annotations on class properties, if the class properties are already initialized with "annotation-like" expressions. e.g. We can now infer the type directly for properties like `prop = (foo: string): number => 3`.
+
+Notable bug fixes:
+* Fixed a bug that causes the first run of `flow check` to always return 0 errors, when some parts of temporary directory is a symlink.
+* Hover type on react elements now show the type of the component and props, instead of just `React$Element`. (e.g. [try-Flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCAB0oGZGBBKBIAAQAKgJGBIBIASqxlASYJRwgSAOSeZSMgDcWKxLWMBIACvTGCQADwAFQAfASALwE4BYgkEuGMZAEkUcqDyqyarFItVYpZk8kAYXCuJ2flFEoUDSgbHJVK8VmNIlNFiF-PuwvFEuASM5UD10HsBLw2HMfilBKFTpd4cVkoxIHspigCATAHoxWq02n5fKAHoEgDucGGBJIOQghcp1IkABIAKKlMMSIXc7AQGAE6PQCy8PkC4VJ9IIMVirExED5EwkODQIL5AAMVgATMuAOxWBcgJFAA))
+* For missing annotation on exports, we now correctly say some annotation is missing on an identifier instead of array pattern. e.g. for `export function f(a) {}`, we now say "Missing type annotation at identifier" instead of "Missing type annotation at array pattern".
+
+Parser:
+* Flow can now parse `declare namespace Foo {...}` statements. The body of the declare namespace statement shares the same restrictions of `declare module`.
+* Invalid exports in `declare module` are no longer parse errors. They are now type checker errors.
+
+### 0.227.0
+
+Likely to cause new Flow errors:
+* Some errors related to empty arrays might have their error locations or codes changed.
+* Flow will now interpret trivially recursive types, such as `type T = T` as `empty`, instead of `any`. (e.g. [try-Flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCAB0-GsAAQAQRxAF4cQAhADcWJaxlJRPxFKgWIADDiMCR8Sy2SSOTjsCIHrQyTiAPRCnEAdzgwxxUAgYpxOBZUB51AglBxzIAfgA+Hl8lo4gAU3GKbLxAEoYiB8iYSHBoEF8oyrAAmZ0AVisAEYQEigA)).
+* We now error when calling `.call()` on polymorphic functions where the return type is under-constrained (e.g. [try-Flow](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCGiWVGwAAIYAtlHBoDjQQBRagQSgAHgAKgA+AAUJkolOQONOtAAlGyaQBuAA6i2g9hxzJxAF4Sb1ySzKDZuLgGRIcgjeDiAIyc3k4gD0OpxAHc4MMcVAIAbRRTKIa4MqcQsNJQXsKpG8dmwcTTBYLbCL4Mk2DK2cIRDMJVKJDLKfLhkqVSQ1ZrtXq8UkbXaWBIhJQoOzthBLI8oIKYiB8iYSESoEF8gAGKwAJgbAFYrOqQEigA)). To fix add an annotation to the return result.
+
+Parser:
+* DeclareModule AST will no longer have a kind field
+
+Library Definitions:
+* Removed redundant cases in `Array.from` overloads. It might cause some error locations and codes to change.
+* Add types for the Storage API, available via `window.navigator.storage` (thanks @ZelJin).
+
+### 0.226.0
+
+Likely to cause new Flow errors:
+* $ObjMap and $TupleMap become stricter. The following code now errors: [example](https://flow.org/try/#1N4Igxg9gdgZglgcxALlAIwIZoKYBsD6uEEAztvhgE6UYCe+JADpdhgCYowa5kA0I2KAFcAtiRQAXSkOz9sADwxgJ+NPTbYuQ3BMnTZA+Y2yU4IwRO4A6SFBIrGVDGM7c+IFkolXpUCWewUEAwhCQgRDH8wEH4hMnwROHlsNnw4KHwwSLAAC3wANyo4LFxscWQuHgMNZmwsiRSAWglaY1cq-hIAa2wJXNpG4Vxcdvdu3v7B0RxKUYMhKDBSqmbWwIq3eagoOrKSKgH0wtMMPznY7d2SfcoBiEZ-aG5G3Ix085AF-ZhsRoRehqUEiNMgSQHlSruBZxJrMcJwMhzAC+-EgGiCLWMAAIAGIAHgAKgA+LEAXixABIAEqsNgAeSguFoeOAAB0oFisUQEMgsQAKPkASjJJIJwtJJPyEDgbF47M5VkV7KRRIA3Oz2RollRsFiYAtlHBoFiIowAIx4um84CKqwqvkQM28umC3kUuloABWAFkMIxLbwsXiAGpEvn40OCiWh9VQLW4HV6g2PDmmgBMeIAgm6aewGUzM9Q6HjEsk2ESwxA07yAAqUeFkLNE12UglCRilX3+zOBkNhiPN6NqjWLaD2PXEMlYj2eureGAsbAAL2wfOAmEo1u5vL5MB34pJ9lMUAQB6xwCRl8F7Ns48dU9NZt3xGFGBI543vOEIhmSNjN7HCQsTQSdyTrBtsCsbhcD5ABtGBiFggByDckIAXTQwVY1vICqwfP00z5ECIFfd9YIAanyL9phMNDYxiEB8hMEgjSgIJ8gABisNM0wAVisM0QCRIA)
+
+IDE:
+* Linked JSX editing will now only trigger if you edit the opening tag, instead of both the opening and the closing tag.
+* We now provide IDE services in user-defined library definitions.
+
+Notable bug fixes:
+* Fixed a bug where recursive types defined across multiple files caused spurious errors and led to unsound types
+* Add .databases() to IDBFactory (thanks @bobrovnikov)
+* Mark `DOMStringList` as iterable, so that it works with `Array.from(...)` (thanks @bobrovnikov)
+
 ### 0.225.1
 
 Notable bug fixes:

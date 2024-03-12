@@ -29,7 +29,6 @@ module type S = sig
     | ClassStaticThisLoc
     | ClassInstanceSuperLoc
     | ClassStaticSuperLoc
-    | CJSModuleExportsLoc
   [@@deriving show]
 
   type autocomplete_hooks = {
@@ -97,7 +96,10 @@ module type S = sig
   and write_locs = write_loc list
 
   type val_kind =
-    | Type of { imported: bool }
+    | Type of {
+        imported: bool;
+        type_only_namespace: bool;
+      }
     | Value
 
   type read = {
@@ -203,10 +205,6 @@ module type S = sig
     * (L.t, L.t) Ast.Expression.CallTypeArgs.t option
     * (L.t, L.t) Ast.Expression.ArgList.t
 
-  type cjs_exports_state =
-    | CJSExportNames of (L.t * L.t) SMap.t
-    | CJSModuleExports of L.t
-
   type env_info = {
     scopes: Scope_api.info;
     ssa_values: Ssa_api.values;
@@ -217,7 +215,6 @@ module type S = sig
     providers: Provider_api.info;
     refinement_of_id: int -> Refi.refinement;
     pred_func_map: pred_func_info L.LMap.t;
-    cjs_exports_state: cjs_exports_state;
   }
 
   type 'l annot_loc =
@@ -332,7 +329,6 @@ module Make
     | ClassStaticThisLoc
     | ClassInstanceSuperLoc
     | ClassStaticSuperLoc
-    | CJSModuleExportsLoc
   [@@deriving show]
 
   type autocomplete_hooks = {
@@ -461,7 +457,10 @@ module Make
   include Refi
 
   type val_kind =
-    | Type of { imported: bool }
+    | Type of {
+        imported: bool;
+        type_only_namespace: bool;
+      }
     | Value
 
   type read = {
@@ -502,10 +501,6 @@ module Make
     * (L.t, L.t) Ast.Expression.CallTypeArgs.t option
     * (L.t, L.t) Ast.Expression.ArgList.t
 
-  type cjs_exports_state =
-    | CJSExportNames of (L.t * L.t) SMap.t
-    | CJSModuleExports of L.t
-
   type env_info = {
     scopes: Scope_api.info;
     ssa_values: Ssa_api.values;
@@ -516,7 +511,6 @@ module Make
     providers: Provider_api.info;
     refinement_of_id: int -> Refi.refinement;
     pred_func_map: pred_func_info L.LMap.t;
-    cjs_exports_state: cjs_exports_state;
   }
 
   type 'l annot_loc =
@@ -537,7 +531,6 @@ module Make
       providers = Provider_api.empty;
       refinement_of_id = (fun _ -> raise (Env_invariant (None, Impossible "Empty env info")));
       pred_func_map = L.LMap.empty;
-      cjs_exports_state = CJSExportNames SMap.empty;
     }
 
   let map_result ~f res =

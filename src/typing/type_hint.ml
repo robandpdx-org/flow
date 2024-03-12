@@ -136,8 +136,15 @@ let rec instantiate_callee cx fn instantiation_hint =
       Flow_js.flow cx (instance, GetStaticsT statics);
       handle_poly (get_t cx (OpenT statics))
     | DefT
-        (_, PolyT { tparams_loc = _; tparams; t_out = ThisClassT (r, i, this, this_name); id = _ })
-      ->
+        ( _,
+          PolyT
+            {
+              tparams_loc = _;
+              tparams;
+              t_out = DefT (class_r, ClassT (ThisInstanceT (inst_r, i, this, this_name)));
+              id = _;
+            }
+        ) ->
       let subst_map =
         tparams
         |> Nel.map (fun tparam -> (tparam.name, tparam.bound))
@@ -145,7 +152,15 @@ let rec instantiate_callee cx fn instantiation_hint =
         |> Subst_name.Map.of_list
       in
       let t =
-        Flow_js_utils.fix_this_class cx r (r, Flow_js.subst cx subst_map i, this, this_name)
+        DefT
+          ( class_r,
+            ClassT
+              (Flow_js_utils.fix_this_instance
+                 cx
+                 inst_r
+                 (inst_r, Type_subst.subst_instance_type cx subst_map i, this, this_name)
+              )
+          )
       in
       handle_poly (get_t cx t)
     | DefT (_, PolyT { tparams_loc; tparams; t_out; id = _ }) as t ->
@@ -269,7 +284,7 @@ and type_of_hint_decomposition cx op reason t =
     in
     let predicate =
       Base.Option.map pred ~f:(function
-          | PredKind -> PredBased (reason, Key_map.empty, Key_map.empty)
+          | PredKind -> PredBased (reason, lazy (Key_map.empty, Key_map.empty))
           | TypeGuardKind (param_loc, param_name) ->
             TypeGuardBased
               {
@@ -286,6 +301,7 @@ and type_of_hint_decomposition cx op reason t =
         return_t;
         predicate;
         def_reason = reason;
+        hook = AnyHook;
       }
     in
     DefT (reason, FunT (statics, func))
@@ -308,13 +324,21 @@ and type_of_hint_decomposition cx op reason t =
     let mod_ctor_return instance_type = function
       | DefT
           ( reason,
-            FunT (static, { this_t; params; rest_param; return_t = _; predicate; def_reason })
+            FunT (static, { this_t; params; rest_param; return_t = _; predicate; def_reason; hook })
           ) ->
         DefT
           ( reason,
             FunT
               ( static,
-                { this_t; params; rest_param; return_t = instance_type; predicate; def_reason }
+                {
+                  this_t;
+                  params;
+                  rest_param;
+                  return_t = instance_type;
+                  predicate;
+                  def_reason;
+                  hook;
+                }
               )
           )
       | t -> get_t cx t
@@ -396,7 +420,7 @@ and type_of_hint_decomposition cx op reason t =
             SpeculationFlow.resolved_lower_flow_t_unsafe
               cx
               reason
-              (Flow_js.get_builtin_typeapp cx reason (OrdinaryName "Promise") [t], tout)
+              (Flow_js.get_builtin_typeapp cx reason "Promise" [t], tout)
         )
       | Decomp_CallNew ->
         (* For `new A(...)`, The initial base type we have is `Class<A>`. We need to first unwrap
@@ -472,7 +496,7 @@ and type_of_hint_decomposition cx op reason t =
               reason
               (t, ReactKitT (unknown_use, reason, React.GetConfig (OpenT props_t)))
         )
-      | Decomp_JsxRef -> Flow_js.get_builtin_typeapp cx reason (OrdinaryName "React$Ref") [t]
+      | Decomp_JsxRef -> Flow_js.get_builtin_typeapp cx reason "React$Ref" [t]
       | Decomp_MethodElem ->
         SpeculationFlow.get_method_type_unsafe
           cx
@@ -506,12 +530,15 @@ and type_of_hint_decomposition cx op reason t =
         Tvar.mk_no_wrap_where cx reason (fun tout ->
             let use_t =
               GetPropT
-                ( unknown_use,
-                  reason,
-                  Some (Reason.mk_id ()),
-                  mk_named_prop ~reason (OrdinaryName name),
-                  tout
-                )
+                {
+                  use_op = unknown_use;
+                  reason;
+                  id = Some (Reason.mk_id ());
+                  from_annot = false;
+                  propref = mk_named_prop ~reason (OrdinaryName name);
+                  tout;
+                  hint = hint_unavailable;
+                }
             in
             SpeculationFlow.resolved_lower_flow_unsafe cx reason (t, use_t)
         )
@@ -595,7 +622,7 @@ and type_of_hint_decomposition cx op reason t =
             SpeculationFlow.resolved_lower_flow_t_unsafe
               cx
               reason
-              (t, Flow_js.get_builtin_typeapp cx reason (OrdinaryName "Promise") [inner_t]);
+              (t, Flow_js.get_builtin_typeapp cx reason "Promise" [inner_t]);
             SpeculationFlow.resolved_lower_flow_t_unsafe cx reason (t, inner_t)
         )
   )

@@ -352,175 +352,62 @@ module Statement = Fix_statement.Statement_
 (* Driver *)
 (**********)
 
-let initialize_env ~lib ?(exclude_syms = NameUtils.Set.empty) cx aloc_ast toplevel_scope_kind =
-  let (_abrupt_completion, info) = NameResolver.program_with_scope cx ~lib ~exclude_syms aloc_ast in
-  let autocomplete_hooks =
-    {
-      Env_api.id_hook = Type_inference_hooks_js.dispatch_id_hook cx;
-      literal_hook = Type_inference_hooks_js.dispatch_literal_hook cx;
-      obj_prop_decl_hook = Type_inference_hooks_js.dispatch_obj_prop_decl_hook cx;
-    }
-  in
-  let (name_def_graph, hint_map) =
-    Name_def.find_defs ~autocomplete_hooks info toplevel_scope_kind (Context.file cx) aloc_ast
-  in
-  let hint_map = ALocMap.mapi (Env_resolution.lazily_resolve_hints cx) hint_map in
-  let pred_func_map =
-    ALocMap.map (Env_resolution.resolve_pred_func cx) info.Env_api.pred_func_map
-  in
-  let env = Loc_env.with_info Name_def.Global hint_map info pred_func_map name_def_graph in
-  Context.set_environment cx env;
-  let components = NameDefOrdering.build_ordering cx ~autocomplete_hooks info name_def_graph in
-  Base.List.iter ~f:(Cycles.handle_component cx name_def_graph) components;
-  Type_env.init_env cx toplevel_scope_kind;
-  let { Loc_env.scope_kind; class_stack; _ } = Context.environment cx in
-  Base.List.iter ~f:(Env_resolution.resolve_component cx name_def_graph) components;
-  Debug_js.Verbose.print_if_verbose_lazy cx (lazy ["Finished all components"]);
-  let env = Context.environment cx in
-  Context.set_environment cx { env with Loc_env.scope_kind; class_stack }
-
-let check_multiplatform_conformance cx filename prog_aloc =
-  let file_options = (Context.metadata cx).Context.file_options in
-  let self_sig_loc =
-    Import_export.module_exports_sig_loc cx |> Base.Option.value ~default:prog_aloc
-  in
-  let file_loc = Loc.{ none with source = Some filename } |> ALoc.of_loc in
-  match
-    Files.relative_interface_mref_of_possibly_platform_specific_file ~options:file_options filename
-  with
-  | Some imported_interface_module_name ->
-    let open Type in
-    (match Context.find_require cx imported_interface_module_name with
-    | Error _ ->
-      (* It's ok if a platform speicific implementation file doesn't have an interface.
-       * It just makes the module non-importable without platform extension. *)
-      ()
-    | Ok interface_module_t ->
-      let get_exports_t ~is_common_interface_module reason module_t =
-        match Flow_js.possible_concrete_types_for_inspection cx reason module_t with
-        | [ModuleT m] ->
-          if
-            is_common_interface_module
-            && Platform_set.no_overlap
-                 (Base.Option.value_exn (Context.available_platforms cx))
-                 (Base.Option.value_exn m.module_available_platforms)
-          then
-            (* If the current module's platform has no overlap with the common interface
-             * file's platforms, then the common interface file is irrelevant. We give it an
-             * any type to make conformance check always passing. *)
-            AnyT.make Untyped reason
-          else
-            Flow_js_utils.ImportModuleNsTKit.on_ModuleT
-              cx
-              ~is_common_interface_module
-              (reason, false)
-              m
-        | _ -> AnyT.make Untyped reason
-      in
-      let interface_t =
-        let reason = Reason.(mk_reason (RCustom "common interface") prog_aloc) in
-        get_exports_t ~is_common_interface_module:true reason interface_module_t
-      in
-      let self_t =
-        let reason = Reason.(mk_reason (RCustom "self") prog_aloc) in
-        let source_module_t = Import_export.mk_module_t cx reason file_loc in
-        get_exports_t ~is_common_interface_module:false reason source_module_t
-      in
-      (* We need to fully resolve the type to prevent tvar widening. *)
-      Tvar_resolver.resolve cx interface_t;
-      Tvar_resolver.resolve cx self_t;
-      let use_op = Op (ConformToCommonInterface { self_sig_loc; self_module_loc = prog_aloc }) in
-      Flow_js.flow cx (self_t, UseT (use_op, interface_t)))
-  | None ->
-    (match
-       Platform_set.platform_specific_implementation_mrefs_of_possibly_interface_file
-         ~file_options
-         ~platform_set:(Context.available_platforms cx)
-         ~file:filename
-     with
-    | None -> ()
-    | Some impl_mrefs ->
-      let module_exists mref = Base.Result.is_ok @@ Context.find_require cx mref in
-      let mrefs_with_existence_status =
-        List.map (fun mref -> (mref, module_exists mref)) impl_mrefs
-      in
-      if
-        (not (Context.has_explicit_supports_platform cx))
-        && List.for_all (fun (_, exists) -> not exists) mrefs_with_existence_status
-      then
-        (* We are fine if no implementation file exist.
-         * The .js.flow file might be declaring a builtin module. *)
-        ()
-      else
-        (* If one implementation file exist, then all platform specific implementations must exist. *)
-        Base.List.iter mrefs_with_existence_status ~f:(fun (impl_mref, exist) ->
-            if not exist then
-              Flow_js_utils.add_output
-                cx
-                Error_message.(
-                  EPlatformSpecificImplementationModuleLookupFailed
-                    { loc = file_loc; name = impl_mref }
-                )
-        ))
-
-(* build module graph *)
-(* Lint suppressions are handled iff lint_severities is Some. *)
-let infer_ast ~lint_severities cx filename comments aloc_ast =
-  assert (Context.is_checked cx);
-
-  let ( prog_aloc,
-        {
-          Ast.Program.statements = aloc_statements;
-          interpreter = aloc_interpreter;
-          comments = aloc_comments;
-          all_comments = aloc_all_comments;
-        }
-      ) =
-    aloc_ast
-  in
-
+let initialize_env ~lib ?(exclude_syms = SSet.empty) cx aloc_ast toplevel_scope_kind =
   try
-    initialize_env ~lib:false cx aloc_ast Name_def.Module;
-
-    let typed_statements = Statement.statement_list cx aloc_statements in
-
-    let (severity_cover, suppressions, suppression_errors) =
-      scan_for_suppressions ~in_libdef:false lint_severities [(filename, comments)]
+    let (_abrupt_completion, info) =
+      NameResolver.program_with_scope cx ~lib ~exclude_syms aloc_ast
     in
-    Context.add_severity_covers cx severity_cover;
-    Context.add_error_suppressions cx suppressions;
-    List.iter (Flow_js.add_output cx) suppression_errors;
-
-    let program =
-      ( prog_aloc,
-        {
-          Ast.Program.statements = typed_statements;
-          interpreter = aloc_interpreter;
-          comments = aloc_comments;
-          all_comments = aloc_all_comments;
-        }
-      )
+    let autocomplete_hooks =
+      {
+        Env_api.id_hook = Type_inference_hooks_js.dispatch_id_hook cx;
+        literal_hook = Type_inference_hooks_js.dispatch_literal_hook cx;
+        obj_prop_decl_hook = Type_inference_hooks_js.dispatch_obj_prop_decl_hook cx;
+      }
     in
-
-    React_rules.check_react_rules cx program;
-    check_multiplatform_conformance cx filename prog_aloc;
-    Exists_marker.mark cx program;
-    program
+    let (name_def_graph, hint_map) =
+      Name_def.find_defs ~autocomplete_hooks info toplevel_scope_kind aloc_ast
+    in
+    let hint_map = ALocMap.mapi (Env_resolution.lazily_resolve_hints cx) hint_map in
+    let pred_func_map =
+      ALocMap.map (Env_resolution.resolve_pred_func cx) info.Env_api.pred_func_map
+    in
+    let env = Loc_env.with_info Name_def.Global hint_map info pred_func_map name_def_graph in
+    Context.set_environment cx env;
+    let components = NameDefOrdering.build_ordering cx ~autocomplete_hooks info name_def_graph in
+    Base.List.iter ~f:(Cycles.handle_component cx name_def_graph) components;
+    Type_env.init_env cx toplevel_scope_kind;
+    let { Loc_env.scope_kind; class_stack; _ } = Context.environment cx in
+    Base.List.iter ~f:(Env_resolution.resolve_component cx name_def_graph) components;
+    Debug_js.Verbose.print_if_verbose_lazy cx (lazy ["Finished all components"]);
+    let env = Context.environment cx in
+    Context.set_environment cx { env with Loc_env.scope_kind; class_stack }
   with
   | Env_api.Env_invariant (loc, inv) ->
-    let loc = Base.Option.value ~default:prog_aloc loc in
-    Flow_js.add_output cx Error_message.(EInternal (loc, EnvInvariant inv));
-    ( prog_aloc,
-      {
-        Ast.Program.statements = Typed_ast_utils.error_mapper#statement_list aloc_statements;
-        interpreter = aloc_interpreter;
-        comments = aloc_comments;
-        all_comments = aloc_all_comments;
-      }
-    )
+    let loc = Base.Option.value ~default:(fst aloc_ast) loc in
+    Flow_js.add_output cx Error_message.(EInternal (loc, EnvInvariant inv))
+
+(* Lint suppressions are handled iff lint_severities is Some. *)
+let infer_ast ~lint_severities cx filename loc_comments aloc_ast =
+  assert (Context.is_checked cx);
+  let (prog_aloc, { Ast.Program.statements; interpreter; comments; all_comments }) = aloc_ast in
+  initialize_env ~lib:false cx aloc_ast Name_def.Module;
+  let typed_statements = Statement.statement_list cx statements in
+  let (severity_cover, suppressions, suppression_errors) =
+    scan_for_suppressions ~in_libdef:false lint_severities [(filename, loc_comments)]
+  in
+  Context.add_severity_covers cx severity_cover;
+  Context.add_error_suppressions cx suppressions;
+  List.iter (Flow_js.add_output cx) suppression_errors;
+  (prog_aloc, { Ast.Program.statements = typed_statements; interpreter; comments; all_comments })
 
 class lib_def_loc_mapper_and_validator cx =
   let stmt_validator ~in_toplevel_scope (loc, stmt) =
+    let error kind =
+      Error_message.(
+        EUnsupportedSyntax
+          (loc, ContextDependentUnsupportedStatement (UnsupportedStatementInLibdef kind))
+      )
+    in
     let error_opt =
       let open Flow_ast.Statement in
       match stmt with
@@ -532,6 +419,7 @@ class lib_def_loc_mapper_and_validator cx =
       | DeclareInterface _
       | DeclareModule _
       | DeclareModuleExports _
+      | DeclareNamespace _
       | DeclareTypeAlias _
       | DeclareOpaqueType _
       | DeclareVariable _
@@ -545,39 +433,37 @@ class lib_def_loc_mapper_and_validator cx =
       | OpaqueType _ ->
         None
       | ExportNamedDeclaration { ExportNamedDeclaration.export_kind = ExportValue; _ } ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "export"))
+        Some (error "export")
       | ImportDeclaration _ ->
         if in_toplevel_scope then
-          Some (Error_message.EToplevelLibraryImport loc)
+          Some
+            Error_message.(
+              EUnsupportedSyntax (loc, ContextDependentUnsupportedStatement ToplevelLibraryImport)
+            )
         else
           None
-      | Block _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "block"))
-      | Break _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "break"))
-      | ClassDeclaration _ ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "class declaration"))
-      | ComponentDeclaration _ ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "component declaration"))
-      | Continue _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "continue"))
-      | Debugger _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "debugger"))
-      | DoWhile _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "do while"))
-      | ExportDefaultDeclaration _ ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "export default"))
-      | Expression _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "expression"))
-      | For _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "for"))
-      | ForIn _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "for in"))
-      | ForOf _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "for of"))
-      | FunctionDeclaration _ ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "function declaration"))
-      | If _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "if"))
-      | Labeled _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "labeled"))
-      | Return _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "return"))
-      | Switch _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "switch"))
-      | Throw _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "throw"))
-      | Try _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "try"))
-      | VariableDeclaration _ ->
-        Some (Error_message.EUnsupportedStatementInLibdef (loc, "variable declaration"))
-      | While _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "while"))
-      | With _ -> Some (Error_message.EUnsupportedStatementInLibdef (loc, "with"))
+      | Block _ -> Some (error "block")
+      | Break _ -> Some (error "break")
+      | ClassDeclaration _ -> Some (error "class declaration")
+      | ComponentDeclaration _ -> Some (error "component declaration")
+      | Continue _ -> Some (error "continue")
+      | Debugger _ -> Some (error "debugger")
+      | DoWhile _ -> Some (error "do while")
+      | ExportDefaultDeclaration _ -> Some (error "export default")
+      | Expression _ -> Some (error "expression")
+      | For _ -> Some (error "for")
+      | ForIn _ -> Some (error "for in")
+      | ForOf _ -> Some (error "for of")
+      | FunctionDeclaration _ -> Some (error "function declaration")
+      | If _ -> Some (error "if")
+      | Labeled _ -> Some (error "labeled")
+      | Return _ -> Some (error "return")
+      | Switch _ -> Some (error "switch")
+      | Throw _ -> Some (error "throw")
+      | Try _ -> Some (error "try")
+      | VariableDeclaration _ -> Some (error "variable declaration")
+      | While _ -> Some (error "while")
+      | With _ -> Some (error "with")
     in
     match error_opt with
     | None -> true
@@ -595,7 +481,7 @@ class lib_def_loc_mapper_and_validator cx =
 
     method! declare_module l m =
       let open Ast.Statement.DeclareModule in
-      let { id; body = (body_loc, body_block); kind; comments } = m in
+      let { id; body = (body_loc, body_block); comments } = m in
       super#declare_module
         l
         {
@@ -610,7 +496,6 @@ class lib_def_loc_mapper_and_validator cx =
                     body_block.Ast.Statement.Block.body;
               }
             );
-          kind;
           comments;
         }
   end
@@ -620,53 +505,20 @@ class lib_def_loc_mapper_and_validator cx =
    a) symbols from prior library loads are suppressed if found,
    b) bindings are added as properties to the builtin object
 *)
-let infer_lib_file ~lint_severities cx file_key all_comments aloc_ast =
+let infer_lib_file ~lint_severities cx file_key loc_comments aloc_ast =
   let validator_visitor = new lib_def_loc_mapper_and_validator cx in
   let filtered_aloc_ast = validator_visitor#program aloc_ast in
-  let ( prog_aloc,
-        {
-          Ast.Program.statements = aloc_statements;
-          interpreter = aloc_interpreter;
-          comments = aloc_comments;
-          all_comments = aloc_all_comments;
-        }
-      ) =
-    aloc_ast
+  let (prog_aloc, { Ast.Program.statements; interpreter; comments; all_comments }) = aloc_ast in
+  let exclude_syms = cx |> Context.builtins |> Builtins.builtin_ordinary_name_set in
+  initialize_env ~lib:true ~exclude_syms cx filtered_aloc_ast Name_def.Global;
+  let (severity_cover, suppressions, suppression_errors) =
+    scan_for_suppressions ~in_libdef:true lint_severities [(file_key, loc_comments)]
   in
-  let exclude_syms = cx |> Context.builtins |> Builtins.builtin_set in
-
-  try
-    initialize_env ~lib:true ~exclude_syms cx filtered_aloc_ast Name_def.Global;
-    let (severity_cover, suppressions, suppression_errors) =
-      scan_for_suppressions ~in_libdef:true lint_severities [(file_key, all_comments)]
-    in
-    let typed_statements = Statement.statement_list cx aloc_statements in
-    let program =
-      ( prog_aloc,
-        {
-          Ast.Program.statements = typed_statements;
-          interpreter = aloc_interpreter;
-          comments = aloc_comments;
-          all_comments = aloc_all_comments;
-        }
-      )
-    in
-    Context.add_severity_covers cx severity_cover;
-    Context.add_error_suppressions cx suppressions;
-    List.iter (Flow_js.add_output cx) suppression_errors;
-    program
-  with
-  | Env_api.Env_invariant (loc, inv) ->
-    let loc = Base.Option.value ~default:prog_aloc loc in
-    Flow_js.add_output cx Error_message.(EInternal (loc, EnvInvariant inv));
-    ( prog_aloc,
-      {
-        Ast.Program.statements = Typed_ast_utils.error_mapper#statement_list aloc_statements;
-        interpreter = aloc_interpreter;
-        comments = aloc_comments;
-        all_comments = aloc_all_comments;
-      }
-    )
+  let typed_statements = Statement.statement_list cx statements in
+  Context.add_severity_covers cx severity_cover;
+  Context.add_error_suppressions cx suppressions;
+  List.iter (Flow_js.add_output cx) suppression_errors;
+  (prog_aloc, { Ast.Program.statements = typed_statements; interpreter; comments; all_comments })
 
 let infer_file ~lint_severities cx file_key all_comments aloc_ast =
   if File_key.is_lib_file file_key then

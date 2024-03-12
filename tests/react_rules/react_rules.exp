@@ -1,6 +1,6 @@
 Error ------------------------------------------------------------------------------------------------------- dro.js:2:5
 
-Cannot assign `42` to `a.x.y` because property `y` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `a.x.y` because property `y` is not writable. [cannot-write]
 
    2| a.x.y = 42; // error
           ^
@@ -8,7 +8,7 @@ Cannot assign `42` to `a.x.y` because property `y` is not writable. [react-rule-
 
 Error ------------------------------------------------------------------------------------------------------- dro.js:3:3
 
-Cannot assign `42` to `a.x` because property `x` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `a.x` because property `x` is not writable. [cannot-write]
 
    3| a.x = 42; // error
         ^
@@ -33,7 +33,7 @@ References:
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:11:3
 
-Cannot assign `0` to `w.v` because property `v` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `0` to `w.v` because property `v` is not writable. [cannot-write]
 
    11| w.v = 0; // error
          ^
@@ -41,7 +41,7 @@ Cannot assign `0` to `w.v` because property `v` is not writable. [react-rule-uns
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:12:5
 
-Cannot assign `42` to `x.x.a` because property `a` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `x.x.a` because property `a` is not writable. [cannot-write]
 
    12| x.x.a = 42; // error
            ^
@@ -49,7 +49,7 @@ Cannot assign `42` to `x.x.a` because property `a` is not writable. [react-rule-
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:13:5
 
-Cannot assign array literal to `x.x.y` because property `y` is not writable. [react-rule-unsafe-mutation]
+Cannot assign array literal to `x.x.y` because property `y` is not writable. [cannot-write]
 
    13| x.x.y = []; // error
            ^
@@ -57,7 +57,7 @@ Cannot assign array literal to `x.x.y` because property `y` is not writable. [re
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:14:3
 
-Cannot assign `42` to `x.x` because property `x` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `x.x` because property `x` is not writable. [cannot-write]
 
    14| x.x = (42: any);
          ^
@@ -65,7 +65,7 @@ Cannot assign `42` to `x.x` because property `x` is not writable. [react-rule-un
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:22:6
 
-Cannot assign `42` to `w2.a.b` because property `b` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `w2.a.b` because property `b` is not writable. [cannot-write]
 
    22| w2.a.b = 42; // error
             ^
@@ -73,7 +73,7 @@ Cannot assign `42` to `w2.a.b` because property `b` is not writable. [react-rule
 
 Error ------------------------------------------------------------------------------------------------------ dro.js:27:7
 
-Cannot assign `42` to `v2[1].a` because property `a` is not writable. [react-rule-unsafe-mutation]
+Cannot assign `42` to `v2[1].a` because property `a` is not writable. [cannot-write]
 
    27| v2[1].a = 42; //error
              ^
@@ -126,7 +126,7 @@ References:
 
 Error ------------------------------------------------------------------- error.invalid-access-ref-during-render.js:8:17
 
-Cannot read `current` from `ref` [1] because `ref` values may not be read during render. 
+Cannot read `current` from `ref` [1] because `ref` values may not be read during render.
 (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    8|   const value = ref.current; // Error
@@ -136,7 +136,7 @@ Cannot read `current` from `ref` [1] because `ref` values may not be read during
 Error ----------------------------------------------------------------------- error.invalid-pass-ref-to-function.js:8:17
 
 Cannot pass `ref` [1] as an argument because `ref` values may not be passed to functions because they could read the ref
-value (`current`) property) during render.  (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+value (`current`) property) during render. (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    8|   const x = foo(ref); // Error
                       ^^^ [1]
@@ -144,7 +144,7 @@ value (`current`) property) during render.  (https://react.dev/reference/react/u
 
 Error ------------------------------------------------------------------------- error.invalid-ref-value-as-props.js:8:20
 
-Cannot read `current` from `ref` [1] because `ref` values may not be read during render. 
+Cannot read `current` from `ref` [1] because `ref` values may not be read during render.
 (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    8|   return <Foo ref={ref.current} />; // Error
@@ -153,7 +153,7 @@ Cannot read `current` from `ref` [1] because `ref` values may not be read during
 
 Error -------------------------------------------------------------- error.invalid-set-and-read-ref-during-render.js:6:3
 
-Cannot read `current` from `ref` [1] because `ref` values may not be read during render. 
+Cannot read `current` from `ref` [1] because `ref` values may not be read during render.
 (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    6|   ref.current = value; // Error
@@ -162,7 +162,7 @@ Cannot read `current` from `ref` [1] because `ref` values may not be read during
 
 Error ------------------------------------------------------------- error.invalid-set-and-read-ref-during-render.js:7:10
 
-Cannot read `current` from `ref` [1] because `ref` values may not be read during render. 
+Cannot read `current` from `ref` [1] because `ref` values may not be read during render.
 (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    7|   return ref.current; // Error
@@ -171,12 +171,57 @@ Cannot read `current` from `ref` [1] because `ref` values may not be read during
 
 Error ---------------------------------------------------- error.invalid-use-ref-added-to-dep-without-type-info.js:14:23
 
-Cannot read `current` from expression [1] because `ref` values may not be read during render. 
+Cannot read `current` from expression [1] because `ref` values may not be read during render.
 (https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
 
    14|   const x = { a, val: val.ref.current }; // Error
                              ^^^^^^^ [1]
 
 
+Error ---------------------------------------------------------------------------------------- exception_for_init.js:9:3
 
-Found 18 errors
+Cannot read `current` from `ref1` [1] because `ref` values may not be read during render.
+(https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+
+   9|   ref1.current; // error
+        ^^^^ [1]
+
+
+Error --------------------------------------------------------------------------------------- exception_for_init.js:13:5
+
+Cannot read `current` from `ref2` [1] because `ref` values may not be read during render.
+(https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+
+   13|     ref2.current; // error
+           ^^^^ [1]
+
+
+Error --------------------------------------------------------------------------------------- exception_for_init.js:23:5
+
+Cannot read `current` from `ref4` [1] because `ref` values may not be read during render.
+(https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+
+   23|     ref4.current = 42; // error
+           ^^^^ [1]
+
+
+Error ---------------------------------------------------------------------------------------------- pass_to_hook.js:4:5
+
+Cannot read `current` from `ref` [1] because `ref` values may not be read within hooks.
+(https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+
+   4|     ref.current; // error
+          ^^^ [1]
+
+
+Error ----------------------------------------------------------------------------------- ref_read_different_type.js:2:5
+
+Cannot read `current` from `otherRef` [1] because `ref` values may not be read during render.
+(https://react.dev/reference/react/useRef). [react-rule-unsafe-ref]
+
+   2|     otherRef.current; // error
+          ^^^^^^^^ [1]
+
+
+
+Found 23 errors

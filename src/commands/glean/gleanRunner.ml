@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+module Ast = Flow_ast
 module TypeScheme = Type.TypeScheme
 
 module DocumentationFullspanMap = struct
@@ -56,10 +57,10 @@ class member_searcher add_member =
     method! on_type_annot x = x
 
     method! member member =
-      let open Flow_ast.Expression.Member in
+      let open Ast.Expression.Member in
       let { _object = ((_, type_), _); property; _ } = member in
       (match property with
-      | PropertyIdentifier ((aloc, _), Flow_ast.Identifier.{ name; _ }) ->
+      | PropertyIdentifier ((aloc, _), Ast.Identifier.{ name; _ }) ->
         this#annot_with_tparams (add_member ~type_ ~aloc ~name)
       | _ -> ());
       super#member member
@@ -75,7 +76,7 @@ class type_reference_searcher add_reference =
     method on_type_annot x = x
 
     method! generic_identifier_type git =
-      let open Flow_ast.Type.Generic.Identifier in
+      let open Ast.Type.Generic.Identifier in
       (match git with
       | Unqualified id
       | Qualified (_, { id; _ }) ->
@@ -143,7 +144,7 @@ let source_of_type_exports ~root ~write_root ~file ~reader ~loc_source ~type_sig
     | RemoteRef { index; _ } ->
       let remote_ref = Type_sig_collections.Remote_refs.get remote_refs index in
       source_of_remote_ref remote_ref
-    | BuiltinRef { ref_loc; name } ->
+    | BuiltinRef { ref_loc; type_ref = _; name } ->
       let loc = loc_of_index ~loc_source ~reader ref_loc in
       let source = SourceOfTypeExport.TypeDeclaration TypeDeclaration.{ name; loc } in
       return source
@@ -192,7 +193,7 @@ let export_of_export_name = function
 let type_import_declarations ~root ~write_root ~resolved_modules ~file_sig =
   let open File_sig in
   let open Base.List.Let_syntax in
-  (match%bind file_sig.requires with
+  (match%bind requires file_sig with
   | Import { source = (_, module_ref); types; typesof; typesof_ns; _ } ->
     let module_ = module_of_module_ref ~resolved_modules ~root ~write_root module_ref in
     let types_info =
@@ -230,7 +231,7 @@ let type_import_declarations ~root ~write_root ~resolved_modules ~file_sig =
 
 let type_declaration_references ~root ~write_root ~reader ~cx ~typed_ast =
   let results = ref [] in
-  let add_reference ((aloc, t), Flow_ast.Identifier.{ name; _ }) =
+  let add_reference ((aloc, t), Ast.Identifier.{ name; _ }) =
     let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
     let rec def_loc_of_t t =
       let def_loc = t |> TypeUtil.def_loc_of_t |> Parsing_heaps.Reader.loc_of_aloc ~reader in
@@ -285,7 +286,7 @@ let member_declaration_references ~root ~write_root ~reader ~cx ~typed_ast ~file
 let import_declarations ~root ~write_root ~resolved_modules ~file_sig =
   let open File_sig in
   let open Base.List.Let_syntax in
-  (match%bind file_sig.requires with
+  (match%bind requires file_sig with
   | Require { source = (_, module_ref); bindings; _ } ->
     let module_ = module_of_module_ref ~resolved_modules ~root ~write_root module_ref in
     (match bindings with
@@ -390,7 +391,7 @@ let source_of_exports ~root ~write_root ~loc_source ~type_sig ~resolved_modules 
       let remote_ref = Type_sig_collections.Remote_refs.get remote_refs index in
       let%bind source = source_of_remote_ref remote_ref in
       return source
-    | BuiltinRef { ref_loc; name } ->
+    | BuiltinRef { ref_loc; type_ref = _; name } ->
       let loc = loc_of_index ~loc_source ~reader ref_loc in
       let source = SourceOfExport.Declaration Declaration.{ name; loc } in
       return source
@@ -556,7 +557,7 @@ class declaration_info_collector ~scope_info ~reader ~add_var_info ~add_member_i
   object (this)
     inherit Typed_ast_finder.type_parameter_mapper as super
 
-    method! t_identifier (((aloc, type_), Flow_ast.Identifier.{ name; _ }) as ident) =
+    method! t_identifier (((aloc, type_), Ast.Identifier.{ name; _ }) as ident) =
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       if
         Scope_builder.Api.is_local_use scope_info loc && Scope_builder.Api.use_is_def scope_info loc
@@ -564,52 +565,46 @@ class declaration_info_collector ~scope_info ~reader ~add_var_info ~add_member_i
         this#annot_with_tparams add_var_info name loc type_;
       ident
 
-    method! object_key_identifier (((aloc, type_), Flow_ast.Identifier.{ name; _ }) as ident) =
+    method! object_key_identifier (((aloc, type_), Ast.Identifier.{ name; _ }) as ident) =
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_member_info name loc type_;
       ident
 
-    method! type_alias
-        ( Flow_ast.Statement.TypeAlias.{ id = ((aloc, type_), Flow_ast.Identifier.{ name; _ }); _ }
-        as ident
-        ) =
+    method! type_alias _loc alias =
+      let Ast.Statement.TypeAlias.{ id = ((aloc, type_), Ast.Identifier.{ name; _ }); _ } = alias in
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_type_info name loc type_;
-      ident
+      alias
 
-    method! opaque_type
-        ( Flow_ast.Statement.OpaqueType.{ id = ((aloc, type_), Flow_ast.Identifier.{ name; _ }); _ }
-        as ident
-        ) =
+    method! opaque_type _loc otype =
+      let Ast.Statement.OpaqueType.{ id = ((aloc, type_), Ast.Identifier.{ name; _ }); _ } =
+        otype
+      in
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_type_info name loc type_;
-      ident
+      otype
 
-    method! interface
-        ( Flow_ast.Statement.Interface.{ id = ((aloc, type_), Flow_ast.Identifier.{ name; _ }); _ }
-        as ident
-        ) =
+    method! interface _loc iface =
+      let Ast.Statement.Interface.{ id = ((aloc, type_), Ast.Identifier.{ name; _ }); _ } = iface in
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_type_info name loc type_;
-      ident
+      iface
 
-    method! class_identifier (((aloc, type_), Flow_ast.Identifier.{ name; _ }) as ident) =
+    method! class_identifier (((aloc, type_), Ast.Identifier.{ name; _ }) as ident) =
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_type_info name loc type_;
       super#class_identifier ident
 
     method! enum_declaration enum =
-      let open Flow_ast.Statement.EnumDeclaration in
-      let { id = ((aloc, type_), Flow_ast.Identifier.{ name; _ }); body = (_, body); _ } = enum in
+      let open Ast.Statement.EnumDeclaration in
+      let { id = ((aloc, type_), Ast.Identifier.{ name; _ }); body = (_, body); _ } = enum in
       let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
       this#annot_with_tparams add_type_info name loc type_;
-      let defaulted_member (aloc, { DefaultedMember.id = (_, Flow_ast.Identifier.{ name; _ }); _ })
-          =
+      let defaulted_member (aloc, { DefaultedMember.id = (_, Ast.Identifier.{ name; _ }); _ }) =
         let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
         this#annot_with_tparams add_member_info name loc type_
       in
-      let initialized_member
-          (aloc, { InitializedMember.id = (_, Flow_ast.Identifier.{ name; _ }); _ }) =
+      let initialized_member (aloc, { InitializedMember.id = (_, Ast.Identifier.{ name; _ }); _ }) =
         let loc = Parsing_heaps.Reader.loc_of_aloc ~reader aloc in
         this#annot_with_tparams add_member_info name loc type_
       in
@@ -651,7 +646,7 @@ let declaration_infos ~root ~write_root ~scope_info ~file ~file_sig ~cx ~reader 
        #program
        typed_ast
     );
-  let genv = Ty_normalizer_env.mk_genv ~cx ~file ~typed_ast ~file_sig in
+  let genv = Ty_normalizer_env.mk_genv ~cx ~file ~typed_ast_opt:(Some typed_ast) ~file_sig in
   let options = Ty_normalizer_env.default_options in
   let exact_by_default = Context.exact_by_default cx in
   let docs_and_spans = DocumentationFullspanMap.create ast file in
@@ -728,14 +723,22 @@ let all_schema_version = 7
 
 let flow_schema_version = 3
 
-let make ~output_dir ~write_root =
-  (module Codemod_runner.MakeSimpleTypedRunner (struct
+let create_typed_runner_config ~output_dir ~write_root ~include_direct_deps =
+  (module struct
     type accumulator = {
       files_analyzed: int;
       json_filenames: SSet.t;
     }
 
     let check_options o = o
+
+    let expand_roots ~env files =
+      if include_direct_deps then
+        Pure_dep_graph_operations.calc_direct_dependencies
+          (Dependency_info.implementation_dependency_graph env.ServerEnv.dependency_info)
+          files
+      else
+        files
 
     let reporter =
       let open Codemod_report in
@@ -854,5 +857,15 @@ let make ~output_dir ~write_root =
       output_facts "src.FileLines.1" file_lines;
       close_out out_channel;
       { files_analyzed = 1; json_filenames = SSet.singleton output_file }
-  end) : Codemod_runner.RUNNABLE
+  end : Codemod_runner.SIMPLE_TYPED_RUNNER_CONFIG
   )
+
+let make ~output_dir ~write_root ~include_direct_deps ~include_reachable_deps =
+  let module C = ( val create_typed_runner_config ~output_dir ~write_root ~include_direct_deps
+                     : Codemod_runner.SIMPLE_TYPED_RUNNER_CONFIG
+                 )
+  in
+  if include_reachable_deps then
+    (module Codemod_runner.MakeSimpleTypedTwoPassRunner (C) : Codemod_runner.RUNNABLE)
+  else
+    (module Codemod_runner.MakeSimpleTypedRunner (C) : Codemod_runner.RUNNABLE)

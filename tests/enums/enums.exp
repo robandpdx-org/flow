@@ -1,7 +1,7 @@
 Error ----------------------------------------------------------------------------------------------------- cast.js:36:1
 
 Cannot cast `S.A` to nullable string because `S` [1] is incompatible with string [2]. You can explicitly cast your enum
-value to a string using `(<expression>: string)`. [incompatible-cast]
+value to a string using `<expr> as string`. [incompatible-cast]
 
    cast.js:36:1
    36| S.A as ?string; // Error: if casting to representation type, must cast to exactly it
@@ -105,7 +105,7 @@ Error --------------------------------------------------------------------------
 
 Cannot cast `BS.A` to union type because: [incompatible-cast]
  - Either `B` [1] is incompatible with boolean [2]. You can explicitly cast your enum value to a boolean using
-   `(<expression>: boolean)`.
+   `<expr> as boolean`.
  - Or `B` [1] is incompatible with string [3].
 
    cast.js:65:1
@@ -128,7 +128,7 @@ Error --------------------------------------------------------------------------
 
 Cannot cast `BS.A` to union type because: [incompatible-cast]
  - Either `S` [1] is incompatible with string [2]. You can explicitly cast your enum value to a string using
-   `(<expression>: string)`.
+   `<expr> as string`.
  - Or `S` [1] is incompatible with boolean [3].
 
    cast.js:65:1
@@ -151,7 +151,7 @@ Error --------------------------------------------------------------------------
 
 Cannot cast `sb` to union type because: [incompatible-cast]
  - Either `S` [1] is incompatible with string [2]. You can explicitly cast your enum value to a string using
-   `(<expression>: string)`.
+   `<expr> as string`.
  - Or `S` [1] is incompatible with boolean [3].
 
    cast.js:68:1
@@ -174,7 +174,7 @@ Error --------------------------------------------------------------------------
 
 Cannot cast `sb` to union type because: [incompatible-cast]
  - Either `B` [1] is incompatible with boolean [2]. You can explicitly cast your enum value to a boolean using
-   `(<expression>: boolean)`.
+   `<expr> as boolean`.
  - Or `B` [1] is incompatible with string [3].
 
    cast.js:68:1
@@ -807,7 +807,7 @@ References:
 Error ------------------------------------------------------------------------------------------- error-coercion.js:8:19
 
 Cannot assign `E.A` to `a` because `E` [1] is incompatible with string [2]. You can explicitly cast your enum value to a
-string using `(<expression>: string)`. [incompatible-type]
+string using `<expr> as string`. [incompatible-type]
 
    error-coercion.js:8:19
    8| const a: string = E.A; // Error: cannot implicitly coerce enum to its representation type
@@ -856,7 +856,7 @@ References:
 Error ------------------------------------------------------------------------------------------ error-coercion.js:17:26
 
 Cannot assign `B.A` to `boolean` because `B` [1] is incompatible with boolean [2]. You can explicitly cast your enum
-value to a boolean using `(<expression>: boolean)`. [incompatible-type]
+value to a boolean using `<expr> as boolean`. [incompatible-type]
 
    error-coercion.js:17:26
    17| const boolean: boolean = B.A; // Error, with suggestion
@@ -891,7 +891,7 @@ References:
 Error ------------------------------------------------------------------------------------------ error-coercion.js:23:21
 
 Cannot assign `N.A` to `num` because `N` [1] is incompatible with number [2]. You can explicitly cast your enum value to
-a number using `(<expression>: number)`. [incompatible-type]
+a number using `<expr> as number`. [incompatible-type]
 
    error-coercion.js:23:21
    23| const num: number = N.A; // Error, with suggestion
@@ -926,7 +926,7 @@ References:
 Error ------------------------------------------------------------------------------------------ error-coercion.js:29:21
 
 Cannot assign `S.A` to `sym` because `S` [1] is incompatible with symbol [2]. You can explicitly cast your enum value to
-a symbol using `(<expression>: symbol)`. [incompatible-type]
+a symbol using `<expr> as symbol`. [incompatible-type]
 
    error-coercion.js:29:21
    29| const sym: symbol = S.A; // Error, with suggestion
@@ -1252,8 +1252,8 @@ implicitly-returned undefined in type argument `Return` [2]. [incompatible-retur
                                             ^^^^^^ [1]
 
 References:
-   <BUILTINS>/core.js:1772:29
-   1772| interface Generator<+Yield,+Return,-Next> {
+   <BUILTINS>/core.js:1760:29
+   1760| interface Generator<+Yield,+Return,-Next> {
                                      ^^^^^^ [2]
 
 
@@ -1282,8 +1282,8 @@ undefined in type argument `R` [2]. [incompatible-return]
                                          ^^^^^^ [1]
 
 References:
-   <BUILTINS>/core.js:1941:24
-   1941| declare class Promise<+R = mixed> {
+   <BUILTINS>/core.js:1935:24
+   1935| declare class Promise<+R = mixed> {
                                 ^ [2]
 
 
@@ -1417,8 +1417,8 @@ References:
    exhaustive-check.js:3:6
       3| enum E {
               ^ [2]
-   <BUILTINS>/core.js:2627:3
-   2627|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
+   <BUILTINS>/core.js:2621:3
+   2621|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [3]
 
 
@@ -2079,15 +2079,15 @@ Cannot get `E.nonExistent` because property `nonExistent` is missing in `$EnumPr
            ^^^^^^^^^^^
 
 References:
-   <BUILTINS>/core.js:2624:56
+   <BUILTINS>/core.js:2618:56
                                                                 v-
-   2624| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
-   2625|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
-   2626|   getName(this: TEnumObject, input: TEnum): string,
-   2627|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
-   2628|   members(this: TEnumObject): Iterator<TEnum>,
-   2629|   __proto__: null,
-   2630| |}
+   2618| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
+   2619|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
+   2620|   getName(this: TEnumObject, input: TEnum): string,
+   2621|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
+   2622|   members(this: TEnumObject): Iterator<TEnum>,
+   2623|   __proto__: null,
+   2624| |}
          -^ [1]
 
 
@@ -2100,15 +2100,15 @@ Cannot call `E.nonExistent` because property `nonExistent` is missing in `$EnumP
            ^^^^^^^^^^^
 
 References:
-   <BUILTINS>/core.js:2624:56
+   <BUILTINS>/core.js:2618:56
                                                                 v-
-   2624| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
-   2625|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
-   2626|   getName(this: TEnumObject, input: TEnum): string,
-   2627|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
-   2628|   members(this: TEnumObject): Iterator<TEnum>,
-   2629|   __proto__: null,
-   2630| |}
+   2618| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
+   2619|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
+   2620|   getName(this: TEnumObject, input: TEnum): string,
+   2621|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
+   2622|   members(this: TEnumObject): Iterator<TEnum>,
+   2623|   __proto__: null,
+   2624| |}
          -^ [1]
 
 
@@ -2135,15 +2135,15 @@ Cannot call `E.A` because property `A` is missing in `$EnumProto` [1]. [prop-mis
            ^
 
 References:
-   <BUILTINS>/core.js:2624:56
+   <BUILTINS>/core.js:2618:56
                                                                 v-
-   2624| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
-   2625|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
-   2626|   getName(this: TEnumObject, input: TEnum): string,
-   2627|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
-   2628|   members(this: TEnumObject): Iterator<TEnum>,
-   2629|   __proto__: null,
-   2630| |}
+   2618| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
+   2619|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
+   2620|   getName(this: TEnumObject, input: TEnum): string,
+   2621|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
+   2622|   members(this: TEnumObject): Iterator<TEnum>,
+   2623|   __proto__: null,
+   2624| |}
          -^ [1]
 
 
@@ -2156,15 +2156,15 @@ Cannot call `E.toString` because property `toString` is missing in `$EnumProto` 
            ^^^^^^^^
 
 References:
-   <BUILTINS>/core.js:2624:56
+   <BUILTINS>/core.js:2618:56
                                                                 v-
-   2624| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
-   2625|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
-   2626|   getName(this: TEnumObject, input: TEnum): string,
-   2627|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
-   2628|   members(this: TEnumObject): Iterator<TEnum>,
-   2629|   __proto__: null,
-   2630| |}
+   2618| type $EnumProto<TEnumObject, TEnum, TRepresentation> = {|
+   2619|   cast(this: TEnumObject, input: ?TRepresentation): void | TEnum,
+   2620|   getName(this: TEnumObject, input: TEnum): string,
+   2621|   isValid(this: TEnumObject, input: ?TRepresentation): boolean,
+   2622|   members(this: TEnumObject): Iterator<TEnum>,
+   2623|   __proto__: null,
+   2624| |}
          -^ [1]
 
 
@@ -2177,8 +2177,8 @@ Cannot cast `E.getName(...)` to boolean because string [1] is incompatible with 
          ^^^^^^^^^^^^^^
 
 References:
-   <BUILTINS>/core.js:2626:45
-   2626|   getName(this: TEnumObject, input: TEnum): string,
+   <BUILTINS>/core.js:2620:45
+   2620|   getName(this: TEnumObject, input: TEnum): string,
                                                      ^^^^^^ [1]
    methods.js:44:19
      44| E.getName(E.B) as boolean; // Error - wrong type

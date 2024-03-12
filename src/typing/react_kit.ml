@@ -53,13 +53,7 @@ module Kit (Flow : Flow_common.S) : REACT = struct
   let component_class cx reason props =
     DefT
       ( reason,
-        ClassT
-          (Flow.get_builtin_typeapp
-             cx
-             reason
-             (OrdinaryName "React$Component")
-             [props; Tvar.mk cx reason]
-          )
+        ClassT (Flow.get_builtin_typeapp cx reason "React$Component" [props; Tvar.mk cx reason])
       )
 
   let get_intrinsic cx trace component ~reason_op artifact literal prop =
@@ -67,7 +61,7 @@ module Kit (Flow : Flow_common.S) : REACT = struct
     (* Get the internal $JSXIntrinsics map. *)
     let intrinsics =
       let reason = mk_reason (RType (OrdinaryName "$JSXIntrinsics")) (loc_of_t component) in
-      get_builtin_type cx reason (OrdinaryName "$JSXIntrinsics")
+      get_builtin_type cx reason "$JSXIntrinsics"
     in
     (* Create a use_op for the upcoming operations. *)
     let use_op =
@@ -97,20 +91,24 @@ module Kit (Flow : Flow_common.S) : REACT = struct
       trace
       ( intrinsics,
         GetPropT
-          ( use_op,
-            reason,
-            None,
-            (match literal with
-            | Literal (_, name) ->
-              let reason =
-                replace_desc_reason
-                  (RReactElement { name_opt = Some name; from_component_syntax = false })
-                  reason
-              in
-              mk_named_prop ~reason name
-            | _ -> Computed component),
-            (reason, intrinsic)
-          )
+          {
+            use_op;
+            reason;
+            id = None;
+            from_annot = false;
+            propref =
+              (match literal with
+              | Literal (_, name) ->
+                let reason =
+                  replace_desc_reason
+                    (RReactElement { name_opt = Some name; from_component_syntax = false })
+                    reason
+                in
+                mk_named_prop ~reason name
+              | _ -> Computed component);
+            tout = (reason, intrinsic);
+            hint = hint_unavailable;
+          }
       );
 
     (* Get the artifact from the intrinsic. *)
@@ -561,7 +559,7 @@ module Kit (Flow : Flow_common.S) : REACT = struct
           replace_desc_reason (RCustom "React key") (reason_of_t normalized_config)
         in
         (* Create the key type. *)
-        let key_t = optional (maybe (get_builtin_type cx reason_key (OrdinaryName "React$Key"))) in
+        let key_t = optional (maybe (get_builtin_type cx reason_key "React$Key")) in
         (* Flow the config input key type to the key type. *)
         let lookup_kind = NonstrictReturning (None, None) in
         let prop_name = OrdinaryName "key" in
@@ -605,9 +603,7 @@ module Kit (Flow : Flow_common.S) : REACT = struct
           replace_desc_reason (RCustom "React ref") (reason_of_t normalized_config)
         in
         (* Create the ref type. *)
-        let ref_t =
-          optional (maybe (get_builtin_typeapp cx reason_ref (OrdinaryName "React$Ref") [l]))
-        in
+        let ref_t = optional (maybe (get_builtin_typeapp cx reason_ref "React$Ref" [l])) in
         (* Flow the config input ref type to the ref type. *)
         let lookup_kind = NonstrictReturning (None, None) in
         let prop_name = OrdinaryName "ref" in
@@ -649,7 +645,7 @@ module Kit (Flow : Flow_common.S) : REACT = struct
           cx
           elem_reason
           ~use_desc:true
-          (OrdinaryName "React$Element")
+          "React$Element"
           [component; Tvar.mk_where cx reason_op props_to_tout]
       in
       (* Concretize to an ObjT so that we can asssociate the monomorphized component with the props id *)

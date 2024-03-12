@@ -168,7 +168,8 @@ let precedence_of_expression expr =
   | (_, E.Unary _) ->
     17
   | (_, E.AsExpression _)
-  | (_, E.TSTypeCast _) ->
+  | (_, E.AsConstExpression _)
+  | (_, E.TSSatisfies _) ->
     12
   | (_, E.Binary { E.Binary.operator; _ }) -> begin
     match operator with
@@ -902,6 +903,7 @@ and statement ?(pretty_semicolon = false) ~opts (root_stmt : (Loc.t, Loc.t) Ast.
       | S.DeclareVariable var -> declare_variable ~opts loc var
       | S.DeclareModuleExports exports -> declare_module_exports ~opts loc exports
       | S.DeclareModule m -> declare_module ~opts loc m
+      | S.DeclareNamespace n -> declare_namespace ~opts loc n
       | S.DeclareTypeAlias typeAlias -> type_alias ~opts ~declare:true loc typeAlias
       | S.DeclareOpaqueType opaqueType -> opaque_type ~opts ~declare:true loc opaqueType
       | S.DeclareExportDeclaration export -> declare_export_declaration ~opts loc export
@@ -1261,8 +1263,9 @@ and expression ?(ctxt = normal_context) ~opts (root_expr : (Loc.t, Loc.t) Ast.Ex
       | E.JSXElement el -> jsx_element ~opts loc el
       | E.JSXFragment fr -> jsx_fragment ~opts loc fr
       | E.TypeCast cast -> type_cast ~opts loc cast
+      | E.AsConstExpression cast -> as_const_expression ~opts loc cast
       | E.AsExpression cast -> as_expression ~opts loc cast
-      | E.TSTypeCast cast -> ts_type_cast ~opts loc cast
+      | E.TSSatisfies cast -> ts_satisfies ~opts loc cast
       | E.Import { E.Import.argument; comments } ->
         layout_node_with_comments_opt loc comments
         @@ fuse [Atom "import"; wrap_in_parens (expression ~opts argument)]
@@ -1484,21 +1487,24 @@ and type_cast ~opts loc cast =
   layout_node_with_comments_opt loc comments
   @@ wrap_in_parens (fuse [expr_layout; type_annotation ~opts annot])
 
+and as_const_expression ~opts loc cast =
+  let open Ast.Expression.AsConstExpression in
+  let { expression = expr; comments } = cast in
+  let expr_layout = expression ~opts expr in
+  let rhs = [Atom "as"; space; Atom "const"] in
+  layout_node_with_comments_opt loc comments @@ fuse [expr_layout; space; fuse rhs]
+
 and as_expression ~opts loc cast =
   let open Ast.Expression.AsExpression in
   let { expression = expr; annot = (_, annot); comments } = cast in
   layout_node_with_comments_opt loc comments
   @@ fuse [expression ~opts expr; space; Atom "as"; space; type_ ~opts annot]
 
-and ts_type_cast ~opts loc cast =
-  let open Ast.Expression.TSTypeCast in
-  let { expression = expr; kind; comments } = cast in
+and ts_satisfies ~opts loc cast =
+  let open Ast.Expression.TSSatisfies in
+  let { expression = expr; annot = (_, annot); comments } = cast in
   let expr_layout = expression ~opts expr in
-  let rhs =
-    match kind with
-    | AsConst -> [Atom "as"; space; Atom "const"]
-    | Satisfies annot -> [Atom "satisfies"; space; type_ ~opts annot]
-  in
+  let rhs = [Atom "satisfies"; space; type_ ~opts annot] in
   layout_node_with_comments_opt loc comments @@ fuse [expr_layout; space; fuse rhs]
 
 and pattern_object_property_key ~opts =
@@ -1736,6 +1742,7 @@ and arrow_function
       tparams;
       comments;
       generator = _;
+      hook = _;
       id = _;
       (* arrows don't have ids and can't be generators *) sig_loc = _;
     } =
@@ -1840,6 +1847,7 @@ and function_ ~opts loc func =
     body;
     async;
     generator;
+    hook;
     predicate;
     return;
     tparams;
@@ -1852,7 +1860,11 @@ and function_ ~opts loc func =
     let s_func =
       fuse
         [
-          Atom "function";
+          ( if hook then
+            Atom "hook"
+          else
+            Atom "function"
+          );
           ( if generator then
             Atom "*"
           else
@@ -2181,6 +2193,7 @@ and class_method
     body;
     async;
     generator;
+    hook = _;
     predicate;
     return;
     tparams;
@@ -2666,6 +2679,7 @@ and object_property ~opts property =
       body;
       async;
       generator;
+      hook = _;
       predicate;
       return;
       tparams;
@@ -2716,6 +2730,7 @@ and object_property ~opts property =
       body;
       async;
       generator;
+      hook = _;
       predicate;
       return;
       tparams;
@@ -2758,6 +2773,7 @@ and object_property ~opts property =
       body;
       async;
       generator;
+      hook = _;
       predicate;
       return;
       tparams;
@@ -3669,10 +3685,15 @@ and type_function_return ~opts = function
   | Ast.Type.Function.TypeGuard guard -> type_guard ~opts ~needs_parens:false guard
 
 and type_function
-    ~opts ~sep loc { Ast.Type.Function.params; return; tparams; comments = func_comments } =
+    ~opts ~sep loc { Ast.Type.Function.params; return; tparams; hook; comments = func_comments } =
   layout_node_with_comments_opt loc func_comments
   @@ group
        [
+         ( if hook then
+           Atom "hook"
+         else
+           Empty
+         );
          option (type_parameter ~opts) tparams;
          type_function_params ~opts params;
          sep;
@@ -4466,7 +4487,7 @@ and declare_module_exports ~opts loc { Ast.Statement.DeclareModuleExports.annot;
   @@ with_semicolon
        (fuse [Atom "declare"; space; Atom "module.exports"; type_annotation ~opts annot])
 
-and declare_module ~opts loc { Ast.Statement.DeclareModule.id; body; kind = _; comments } =
+and declare_module ~opts loc { Ast.Statement.DeclareModule.id; body; comments } =
   source_location_with_comments
     ?comments
     ( loc,
@@ -4481,6 +4502,22 @@ and declare_module ~opts loc { Ast.Statement.DeclareModule.id; body; kind = _; c
             | Ast.Statement.DeclareModule.Identifier id -> identifier id
             | Ast.Statement.DeclareModule.Literal (loc, lit) -> string_literal ~opts loc lit
           end;
+          pretty_space;
+          block ~opts body;
+        ]
+    )
+
+and declare_namespace ~opts loc { Ast.Statement.DeclareNamespace.id; body; comments } =
+  source_location_with_comments
+    ?comments
+    ( loc,
+      fuse
+        [
+          Atom "declare";
+          space;
+          Atom "namespace";
+          space;
+          identifier id;
           pretty_space;
           block ~opts body;
         ]

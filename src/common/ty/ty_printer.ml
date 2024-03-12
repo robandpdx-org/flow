@@ -256,7 +256,9 @@ let layout_of_elt ~prefer_single_quotes ?(size = 5000) ?(with_comments = true) ~
     let body = list ~wrap:(Atom "{", Atom "}") ~sep:(Atom ";") ~trailing:false properties in
     fuse_with_space [Atom "interface"; extends; body]
   and type_function
-      ~depth ~sep { fun_params; fun_rest_param; fun_return; fun_type_params; fun_static = _ } =
+      ~depth
+      ~sep
+      { fun_params; fun_rest_param; fun_return; fun_type_params; fun_static = _; fun_hook } =
     let params = counted_map (type_function_param ~depth) fun_params in
     let params =
       match fun_rest_param with
@@ -265,13 +267,19 @@ let layout_of_elt ~prefer_single_quotes ?(size = 5000) ?(with_comments = true) ~
       | None -> params
     in
     fuse
-      [
-        option ~f:(type_parameter ~depth) fun_type_params;
-        list ~wrap:(Atom "(", Atom ")") ~sep:(Atom ",") ~trailing:false params;
-        sep;
-        pretty_space;
-        return_t ~depth fun_return;
-      ]
+      (( if fun_hook then
+         [Atom "hook"; pretty_space]
+       else
+         []
+       )
+      @ [
+          option ~f:(type_parameter ~depth) fun_type_params;
+          list ~wrap:(Atom "(", Atom ")") ~sep:(Atom ",") ~trailing:false params;
+          sep;
+          pretty_space;
+          return_t ~depth fun_return;
+        ]
+      )
   and type_function_param ~depth (name, annot, { prm_optional }) =
     fuse
       [
@@ -623,27 +631,27 @@ let string_of_elt
   |> Source.contents
 
 let string_of_elt_single_line
-    ?(prefer_single_quotes = false) ?(with_comments = true) (elt : Ty.elt) ~exact_by_default :
-    string =
+    ?(prefer_single_quotes = false) ?(with_comments = true) ?(exact_by_default = true) (elt : Ty.elt)
+    =
   layout_of_elt ~prefer_single_quotes ~with_comments ~exact_by_default elt
   |> print_single_line ~source_maps:None
   |> Source.contents
 
 let string_of_t
-    ?(prefer_single_quotes = false) ?(with_comments = true) (ty : Ty.t) ~exact_by_default : string =
+    ?(prefer_single_quotes = false) ?(with_comments = true) ?(exact_by_default = true) (ty : Ty.t) =
   string_of_elt ~prefer_single_quotes ~with_comments ~exact_by_default (Ty.Type ty)
 
 let string_of_t_single_line
-    ?(prefer_single_quotes = false) ?(with_comments = true) (ty : Ty.t) ~exact_by_default : string =
+    ?(prefer_single_quotes = false) ?(with_comments = true) ?(exact_by_default = true) (ty : Ty.t) =
   string_of_elt_single_line ~prefer_single_quotes ~with_comments ~exact_by_default (Ty.Type ty)
 
 let string_of_decl_single_line
-    ?(prefer_single_quotes = false) ?(with_comments = true) (d : Ty.decl) ~exact_by_default : string
+    ?(prefer_single_quotes = false) ?(with_comments = true) ?(exact_by_default = true) (d : Ty.decl)
     =
   string_of_elt_single_line ~prefer_single_quotes ~with_comments ~exact_by_default (Ty.Decl d)
 
 let string_of_type_at_pos_result
-    ?(prefer_single_quotes = false) ?(with_comments = true) ~exact_by_default result : string =
+    ?(prefer_single_quotes = false) ?(with_comments = true) ?(exact_by_default = true) result =
   layout_of_type_at_pos_result ~prefer_single_quotes ~with_comments ~exact_by_default result
   |> print_pretty ~source_maps:None
   |> Source.contents

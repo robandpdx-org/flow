@@ -52,10 +52,7 @@ module Parallelizable_workload_loop = LwtLoop.Make (struct
         (* We have a workload! Let's run it! *)
         Hh_logger.info "Running a parallel workload";
         should_pause :=
-          if
-            genv.ServerEnv.options.Options.opt_batch_lsp_request_processing
-            && parallelizable_workload_should_be_cancelled ()
-          then
+          if parallelizable_workload_should_be_cancelled () then
             false
           else
             !should_pause;
@@ -86,13 +83,6 @@ let start_parallelizable_workloads genv env =
 let get_lazy_stats ~options env =
   let checked_files = CheckedSet.cardinal env.checked_files in
   let total_files = FilenameSet.cardinal env.files in
-  let (checked_files, total_files) =
-    if Options.libdef_in_checking options then
-      (checked_files, total_files)
-    else
-      let num_of_lib_files = SSet.cardinal env.ServerEnv.libs in
-      (checked_files + num_of_lib_files, total_files + num_of_lib_files)
-  in
   { ServerProt.Response.lazy_mode = Options.lazy_mode options; checked_files; total_files }
 
 (* Filter a set of updates coming from the file watcher or force-recheck or wherever and return a

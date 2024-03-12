@@ -215,6 +215,112 @@ let is_super_member_access = function
   | { Flow_ast.Expression.Member._object = (_, Flow_ast.Expression.Super _); _ } -> true
   | _ -> false
 
+let acceptable_statement_in_declaration_context ~in_declare_namespace = function
+  | Flow_ast.Statement.Block _ -> Error "block"
+  | Flow_ast.Statement.Break _ -> Error "break"
+  | Flow_ast.Statement.ClassDeclaration _ -> Error "class declaration"
+  | Flow_ast.Statement.ComponentDeclaration _ -> Error "component declaration"
+  | Flow_ast.Statement.Continue _ -> Error "continue"
+  | Flow_ast.Statement.Debugger _ -> Error "debugger"
+  | Flow_ast.Statement.DoWhile _ -> Error "do while"
+  | Flow_ast.Statement.ExportDefaultDeclaration _ -> Error "export"
+  | Flow_ast.Statement.ExportNamedDeclaration _ -> Error "export"
+  | Flow_ast.Statement.Expression _ -> Error "expression"
+  | Flow_ast.Statement.For _ -> Error "for"
+  | Flow_ast.Statement.ForIn _ -> Error "for in"
+  | Flow_ast.Statement.ForOf _ -> Error "for of"
+  | Flow_ast.Statement.FunctionDeclaration _ -> Error "function declaration"
+  | Flow_ast.Statement.If _ -> Error "if"
+  | Flow_ast.Statement.Labeled _ -> Error "labeled"
+  | Flow_ast.Statement.Return _ -> Error "return"
+  | Flow_ast.Statement.Switch _ -> Error "switch"
+  | Flow_ast.Statement.Throw _ -> Error "throw"
+  | Flow_ast.Statement.Try _ -> Error "try"
+  | Flow_ast.Statement.VariableDeclaration _ -> Error "variable declaration"
+  | Flow_ast.Statement.While _ -> Error "while"
+  | Flow_ast.Statement.With _ -> Error "with"
+  | Flow_ast.Statement.ImportDeclaration _ ->
+    if in_declare_namespace then
+      Error "import declaration"
+    else
+      Ok ()
+  | Flow_ast.Statement.DeclareModuleExports _ ->
+    if in_declare_namespace then
+      Error "declare module.exports"
+    else
+      Ok ()
+  | Flow_ast.Statement.DeclareClass _
+  | Flow_ast.Statement.DeclareComponent _
+  | Flow_ast.Statement.DeclareEnum _
+  | Flow_ast.Statement.DeclareExportDeclaration _
+  | Flow_ast.Statement.DeclareFunction _
+  | Flow_ast.Statement.DeclareInterface _
+  | Flow_ast.Statement.DeclareModule _
+  | Flow_ast.Statement.DeclareNamespace _
+  | Flow_ast.Statement.DeclareOpaqueType _
+  | Flow_ast.Statement.DeclareTypeAlias _
+  | Flow_ast.Statement.DeclareVariable _
+  | Flow_ast.Statement.Empty _
+  | Flow_ast.Statement.EnumDeclaration _
+  | Flow_ast.Statement.InterfaceDeclaration _
+  | Flow_ast.Statement.OpaqueType _
+  | Flow_ast.Statement.TypeAlias _ ->
+    Ok ()
+
+let rec is_type_only_declaration_statement (_, stmt') =
+  let open Flow_ast.Statement in
+  let is_type_only_declaration_statement' = function
+    | DeclareInterface _
+    | DeclareOpaqueType _
+    | DeclareTypeAlias _
+    | Empty _
+    | InterfaceDeclaration _
+    | OpaqueType _
+    | TypeAlias _ ->
+      true
+    | DeclareExportDeclaration
+        DeclareExportDeclaration.
+          { declaration = Some (NamedType _ | NamedOpaqueType _ | Interface _); _ } ->
+      true
+    | DeclareNamespace { DeclareNamespace.body = (_, { Block.body; _ }); _ } ->
+      List.for_all is_type_only_declaration_statement body
+    | Block _
+    | Break _
+    | ClassDeclaration _
+    | ComponentDeclaration _
+    | Continue _
+    | Debugger _
+    | DoWhile _
+    | EnumDeclaration _
+    | ExportDefaultDeclaration _
+    | ExportNamedDeclaration _
+    | Expression _
+    | For _
+    | ForIn _
+    | ForOf _
+    | FunctionDeclaration _
+    | If _
+    | Labeled _
+    | Return _
+    | Switch _
+    | Throw _
+    | Try _
+    | VariableDeclaration _
+    | While _
+    | With _
+    | ImportDeclaration _
+    | DeclareClass _
+    | DeclareComponent _
+    | DeclareEnum _
+    | DeclareExportDeclaration _
+    | DeclareFunction _
+    | DeclareModule _
+    | DeclareModuleExports _
+    | DeclareVariable _ ->
+      false
+  in
+  is_type_only_declaration_statement' stmt'
+
 let loc_of_statement = fst
 
 let loc_of_expression = fst
@@ -340,6 +446,7 @@ module ExpressionSort = struct
     | Object
     | OptionalCall
     | OptionalMember
+    | Satisfies
     | Sequence
     | Super
     | TaggedTemplate
@@ -372,6 +479,7 @@ module ExpressionSort = struct
     | Object -> "object"
     | OptionalCall -> "optional call expression"
     | OptionalMember -> "optional member expression"
+    | Satisfies -> "satisfies expression"
     | Sequence -> "sequence"
     | Super -> "`super` reference"
     | TaggedTemplate -> "tagged template expression"
@@ -426,8 +534,8 @@ let push_toplevel_type t exp =
   ((loc, t), e')
 
 let hook_name s =
-  let is_A_to_Z c = c >= 'A' && c <= 'Z' in
-  String.starts_with ~prefix:"use" s && (String.length s = 3 || is_A_to_Z s.[3])
+  let is_cap c = c = Char.uppercase_ascii c in
+  String.starts_with ~prefix:"use" s && (String.length s = 3 || is_cap s.[3])
 
 let hook_function { Flow_ast.Function.id; _ } =
   match id with

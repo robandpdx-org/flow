@@ -74,6 +74,7 @@ module type S = sig
 
   val expression :
     ?cond:Type.cond_context ->
+    ?as_const:bool ->
     Context.t ->
     (ALoc.t, ALoc.t) Flow_ast.Expression.t ->
     (ALoc.t, ALoc.t * Type.t) Flow_ast.Expression.t
@@ -119,7 +120,9 @@ module type S = sig
   val mk_function :
     Context.t ->
     needs_this_param:bool ->
-    general:Type.t ->
+    (* Type of the function in typed ast.
+     * For overloaded functions, the type must be read from the environment. *)
+    ?tast_fun_type:Type.t ->
     statics:Env_api.EnvKey.t SMap.t ->
     Reason.reason ->
     ALoc.t ->
@@ -179,7 +182,7 @@ module type S = sig
     Context.t ->
     ALoc.t ->
     name_loc:ALoc.t ->
-    general:Type.t ->
+    ?tast_class_type:Type.t ->
     Reason.t ->
     (ALoc.t, ALoc.t) Ast.Class.t ->
     Type.t * (ALoc.t, ALoc.t * Type.t) Ast.Class.t
@@ -189,7 +192,6 @@ module type S = sig
     name_loc:ALoc.t ->
     class_loc:ALoc.t ->
     Reason.t ->
-    Type.t ->
     (ALoc.t, ALoc.t) Ast.Class.t ->
     Type.t * Type.t * Class_stmt_sig.Types.t * (Type.t -> (ALoc.t, ALoc.t * Type.t) Ast.Class.t)
 
@@ -204,36 +206,6 @@ module type S = sig
     ALoc.t ->
     (ALoc.t, ALoc.t) Ast.Statement.OpaqueType.t ->
     Type.t * (ALoc.t, ALoc.t * Type.t) Ast.Statement.OpaqueType.t
-
-  val import_named_specifier_type :
-    Context.t ->
-    Reason.t ->
-    Ast.Statement.ImportDeclaration.import_kind ->
-    module_name:string ->
-    source_module_t:Type.t ->
-    remote_name_loc:ALoc.t ->
-    remote_name:string ->
-    local_name:string ->
-    ALoc.t option * Type.t
-
-  val import_namespace_specifier_type :
-    Context.t ->
-    Reason.t ->
-    Ast.Statement.ImportDeclaration.import_kind ->
-    module_name:string ->
-    source_module_t:Type.t ->
-    local_loc:ALoc.t ->
-    Type.t
-
-  val import_default_specifier_type :
-    Context.t ->
-    Reason.t ->
-    Ast.Statement.ImportDeclaration.import_kind ->
-    module_name:string ->
-    source_module_t:Type.t ->
-    local_loc:ALoc.t ->
-    local_name:string ->
-    ALoc.t option * Type.t
 
   val interface :
     Context.t ->
@@ -253,16 +225,17 @@ module type S = sig
     (ALoc.t, ALoc.t) Ast.Statement.DeclareComponent.t ->
     Type.t * (ALoc.t, ALoc.t * Type.t) Ast.Statement.DeclareComponent.t
 
-  val declare_module :
+  val declare_namespace :
     Context.t ->
     ALoc.t ->
-    (ALoc.t, ALoc.t) Ast.Statement.DeclareModule.t ->
-    Type.t * (ALoc.t, ALoc.t * Type.t) Ast.Statement.DeclareModule.t
+    (ALoc.t, ALoc.t) Ast.Statement.DeclareNamespace.t ->
+    Type.t * (ALoc.t, ALoc.t * Type.t) Ast.Statement.DeclareNamespace.t
 
   val mk_enum :
     Context.t ->
     enum_reason:Reason.t ->
     ALoc.t ->
+    string ->
     ALoc.t Ast.Statement.EnumDeclaration.body ->
     Type.enum_t
 
@@ -272,15 +245,15 @@ module type S = sig
     (ALoc.t, ALoc.t) Ast.Expression.t ->
     Type.t * Type.t list * (ALoc.t, ALoc.t * Type.t) Ast.Expression.t
 
-  val string_literal : Context.t -> ALoc.t -> ALoc.t Ast.StringLiteral.t -> Type.t
+  val string_literal : Context.t -> as_const:bool -> ALoc.t -> ALoc.t Ast.StringLiteral.t -> Type.t
 
-  val boolean_literal : ALoc.t -> ALoc.t Ast.BooleanLiteral.t -> Type.t
+  val boolean_literal : as_const:bool -> ALoc.t -> ALoc.t Ast.BooleanLiteral.t -> Type.t
 
   val null_literal : ALoc.t -> Type.t
 
-  val number_literal : ALoc.t -> ALoc.t Ast.NumberLiteral.t -> Type.t
+  val number_literal : as_const:bool -> ALoc.t -> ALoc.t Ast.NumberLiteral.t -> Type.t
 
-  val bigint_literal : ALoc.t -> ALoc.t Ast.BigIntLiteral.t -> Type.t
+  val bigint_literal : as_const:bool -> ALoc.t -> ALoc.t Ast.BigIntLiteral.t -> Type.t
 
   val regexp_literal : Context.t -> ALoc.t -> Type.t
 

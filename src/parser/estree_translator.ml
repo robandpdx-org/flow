@@ -252,25 +252,16 @@ with type t = Impl.t = struct
       | (loc, DeclareInterface i) -> declare_interface (loc, i)
       | (loc, DeclareTypeAlias a) -> declare_type_alias (loc, a)
       | (loc, DeclareOpaqueType t) -> opaque_type ~declare:true (loc, t)
-      | (loc, DeclareModule { DeclareModule.id; body; kind; comments }) ->
+      | (loc, DeclareModule { DeclareModule.id; body; comments }) ->
         let id =
           match id with
           | DeclareModule.Literal lit -> string_literal lit
           | DeclareModule.Identifier id -> identifier id
         in
-        node
-          ?comments
-          "DeclareModule"
-          loc
-          [
-            ("id", id);
-            ("body", block body);
-            ( "kind",
-              match kind with
-              | DeclareModule.CommonJS -> string "CommonJS"
-              | DeclareModule.ES -> string "ES"
-            );
-          ]
+        node ?comments "DeclareModule" loc [("id", id); ("body", block body)]
+      | (loc, DeclareNamespace { DeclareNamespace.id; body; comments }) ->
+        let id = identifier id in
+        node ?comments "DeclareNamespace" loc [("id", id); ("body", block body)]
       | ( loc,
           DeclareExportDeclaration
             { DeclareExportDeclaration.specifiers; declaration; default; source; comments }
@@ -418,6 +409,7 @@ with type t = Impl.t = struct
             {
               Function.params = (_, { Function.Params.comments = params_comments; _ }) as params;
               async;
+              hook = _;
               predicate = predicate_;
               tparams;
               return;
@@ -508,15 +500,13 @@ with type t = Impl.t = struct
           "AsExpression"
           loc
           [("expression", expression expr); ("typeAnnotation", _type annot)]
-      | ( loc,
-          TSTypeCast { TSTypeCast.expression = expr; kind = TSTypeCast.Satisfies annot; comments }
-        ) ->
+      | (loc, TSSatisfies { TSSatisfies.expression = expr; annot = (_, annot); comments }) ->
         node
           ?comments
           "SatisfiesExpression"
           loc
           [("expression", expression expr); ("typeAnnotation", _type annot)]
-      | (loc, TSTypeCast { TSTypeCast.expression = expr; kind = TSTypeCast.AsConst; comments }) ->
+      | (loc, AsConstExpression { AsConstExpression.expression = expr; comments }) ->
         node ?comments "AsConstExpression" loc [("expression", expression expr)]
       | (loc, Assignment { Assignment.left; operator; right; comments }) ->
         let operator =
@@ -659,6 +649,7 @@ with type t = Impl.t = struct
             params = (_, { Function.Params.comments = params_comments; _ }) as params;
             async;
             generator;
+            hook;
             predicate = predicate_;
             tparams;
             return;
@@ -677,24 +668,35 @@ with type t = Impl.t = struct
           ~outer:func_comments
           ~inner:(format_internal_comments params_comments)
       in
+      let (node_name, nonhook_attrs) =
+        if hook then
+          ("HookDeclaration", [])
+        else
+          ( "FunctionDeclaration",
+            [
+              ("async", bool async);
+              ("generator", bool generator);
+              ("predicate", option predicate predicate_);
+              ("expression", bool false);
+            ]
+          )
+      in
       node
         ?comments
-        "FunctionDeclaration"
+        node_name
         loc
-        [
-          (* estree hasn't come around to the idea that function decls can have
-             optional ids, but acorn, babel, espree and esprima all have, so let's
-             do it too. see https://github.com/estree/estree/issues/98 *)
-          ("id", option identifier id);
-          ("params", function_params params);
-          ("body", block body);
-          ("async", bool async);
-          ("generator", bool generator);
-          ("predicate", option predicate predicate_);
-          ("expression", bool false);
-          ("returnType", function_return_type return);
-          ("typeParameters", option type_parameter_declaration tparams);
-        ]
+        ([
+           (* estree hasn't come around to the idea that function decls can have
+              optional ids, but acorn, babel, espree and esprima all have, so let's
+              do it too. see https://github.com/estree/estree/issues/98 *)
+           ("id", option identifier id);
+           ("params", function_params params);
+           ("body", block body);
+           ("returnType", function_return_type return);
+           ("typeParameters", option type_parameter_declaration tparams);
+         ]
+        @ nonhook_attrs
+        )
     and function_expression
         ( loc,
           {
@@ -702,6 +704,7 @@ with type t = Impl.t = struct
             params = (_, { Function.Params.comments = params_comments; _ }) as params;
             async;
             generator;
+            hook = _;
             predicate = predicate_;
             tparams;
             return;
@@ -794,18 +797,24 @@ with type t = Impl.t = struct
     and declare_function
         (loc, { Statement.DeclareFunction.id; annot; predicate = predicate_; comments }) =
       let id_loc = Loc.btwn (fst id) (fst annot) in
+      let (name, predicate) =
+        match annot with
+        | (_, (_, Type.Function { Type.Function.hook = true; _ })) -> ("DeclareHook", [])
+        | _ -> ("DeclareFunction", [("predicate", option predicate predicate_)])
+      in
       node
         ?comments
-        "DeclareFunction"
+        name
         loc
-        [
-          ( "id",
-            pattern_identifier
-              id_loc
-              { Pattern.Identifier.name = id; annot = Ast.Type.Available annot; optional = false }
-          );
-          ("predicate", option predicate predicate_);
-        ]
+        ([
+           ( "id",
+             pattern_identifier
+               id_loc
+               { Pattern.Identifier.name = id; annot = Ast.Type.Available annot; optional = false }
+           );
+         ]
+        @ predicate
+        )
     and declare_class
         (loc, { Statement.DeclareClass.id; tparams; body; extends; implements; mixins; comments }) =
       (* TODO: extends shouldn't return an array *)
@@ -1636,6 +1645,7 @@ with type t = Impl.t = struct
               (_, { Type.Function.Params.this_; params; rest; comments = params_comments });
             return;
             tparams;
+            hook;
             comments = func_comments;
           }
         ) =
@@ -1644,17 +1654,28 @@ with type t = Impl.t = struct
           ~inner:(format_internal_comments params_comments)
           ~outer:func_comments
       in
+      let name =
+        if hook then
+          "HookTypeAnnotation"
+        else
+          "FunctionTypeAnnotation"
+      in
       node
         ?comments
-        "FunctionTypeAnnotation"
+        name
         loc
-        [
-          ("params", array_of_list function_type_param params);
-          ("this", option function_type_this_constraint this_);
-          ("returnType", return_annotation return);
-          ("rest", option function_type_rest rest);
-          ("typeParameters", option type_parameter_declaration tparams);
-        ]
+        ([
+           ("params", array_of_list function_type_param params);
+           ("returnType", return_annotation return);
+           ("rest", option function_type_rest rest);
+           ("typeParameters", option type_parameter_declaration tparams);
+         ]
+        @
+        if hook then
+          []
+        else
+          [("this", option function_type_this_constraint this_)]
+        )
     and function_type_param ?comments (loc, { Type.Function.Param.name; annot; optional }) =
       node
         ?comments

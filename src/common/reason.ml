@@ -214,7 +214,7 @@ type 'loc virtual_reason_desc =
   | RPredicateCallNeg of 'loc virtual_reason_desc
   | RRefined of 'loc virtual_reason_desc
   | RRefinedElement of 'loc virtual_reason_desc
-  | RIncompatibleInstantiation of string
+  | RIncompatibleInstantiation of Subst_name.t
   | RSpreadOf of 'loc virtual_reason_desc
   | RPartialOf of 'loc virtual_reason_desc
   | RRequiredOf of 'loc virtual_reason_desc
@@ -222,6 +222,7 @@ type 'loc virtual_reason_desc =
   | RArrayPatternRestProp
   | RCommonJSExports of string
   | RModule of name
+  | RNamespace of string
   | ROptionalChain
   | RReactProps
   (* TODO React element names should not allow internal names *)
@@ -340,7 +341,7 @@ let rec map_desc_locs f = function
   | RRequiredOf desc -> RRequiredOf (map_desc_locs f desc)
   | RMatchingProp (s, desc) -> RMatchingProp (s, map_desc_locs f desc)
   | RImplicitThis desc -> RImplicitThis (map_desc_locs f desc)
-  | ( RObjectPatternRestProp | RArrayPatternRestProp | RCommonJSExports _ | RModule _
+  | ( RObjectPatternRestProp | RArrayPatternRestProp | RCommonJSExports _ | RModule _ | RNamespace _
     | ROptionalChain | RReactProps | RReactElement _ | RReactClass | RReactComponent | RReactStatics
     | RReactDefaultProps | RReactState | RReactChildren ) as r ->
     r
@@ -657,7 +658,7 @@ let rec string_of_desc = function
   | RType x -> spf "`%s`" (prettify_react_util (display_string_of_name x))
   | RTypeAlias (x, _, _) -> spf "`%s`" (prettify_react_util x)
   | ROpaqueType x -> spf "`%s`" (prettify_react_util x)
-  | RTypeParam (x, _, _) -> spf "`%s`" (Subst_name.string_of_subst_name x)
+  | RTypeParam (x, _, _) -> Subst_name.formatted_string_of_subst_name x
   | RTypeParamDefault r -> spf "%s (inferred from type parameter's default)" (string_of_desc r)
   | RTypeParamBound r -> spf "%s (inferred from type parameter's bound)" (string_of_desc r)
   | RTypeof x -> spf "`typeof %s`" x
@@ -730,7 +731,7 @@ let rec string_of_desc = function
   | RPredicateCallNeg d -> spf "negation of predicate call to %s" (string_of_desc d)
   | RRefined d -> spf "refined %s" (string_of_desc d)
   | RRefinedElement d -> spf "array element of refined %s" (string_of_desc d)
-  | RIncompatibleInstantiation x -> spf "`%s`" x
+  | RIncompatibleInstantiation x -> Subst_name.formatted_string_of_subst_name x
   | RSpreadOf d -> spf "spread of %s" (string_of_desc d)
   | RPartialOf d -> spf "partial %s" (string_of_desc d)
   | RRequiredOf d -> spf "required of %s" (string_of_desc d)
@@ -738,6 +739,7 @@ let rec string_of_desc = function
   | RArrayPatternRestProp -> "rest of array pattern"
   | RCommonJSExports x -> spf "module `%s`" x
   | RModule x -> spf "module `%s`" (display_string_of_name x)
+  | RNamespace x -> spf "namespace %s" x
   | ROptionalChain -> "optional chain"
   | RReactProps -> "props"
   | RReactElement { name_opt; from_component_syntax = _ } ->
@@ -1014,6 +1016,8 @@ let rec code_desc_of_expression ~wrap (_, x) =
   | ArrowFunction { Ast.Function.body = Ast.Function.BodyExpression e; _ } ->
     do_wrap ("(...) => " ^ code_desc_of_expression ~wrap:false e)
   | ArrowFunction _ -> do_wrap "(...) => { ... }"
+  | AsConstExpression { AsConstExpression.expression; _ } ->
+    code_desc_of_expression ~wrap expression
   | AsExpression { AsExpression.expression; _ } -> code_desc_of_expression ~wrap expression
   | Assignment { Assignment.left; operator; right; comments = _ } ->
     let left = code_desc_of_pattern left in
@@ -1140,7 +1144,7 @@ let rec code_desc_of_expression ~wrap (_, x) =
   | TaggedTemplate { TaggedTemplate.tag; _ } -> code_desc_of_expression ~wrap:true tag ^ "`...`"
   | TemplateLiteral _ -> "`...`"
   | This _ -> "this"
-  | TSTypeCast { TSTypeCast.expression; _ }
+  | TSSatisfies { TSSatisfies.expression; _ }
   | TypeCast { TypeCast.expression; _ } ->
     code_desc_of_expression ~wrap expression
   | Unary { Unary.operator; argument; comments = _ } ->
@@ -1541,6 +1545,7 @@ let classification_of_reason r =
   | RObjectPatternRestProp
   | RCommonJSExports _
   | RModule _
+  | RNamespace _
   | ROptionalChain
   | RReactProps
   | RReactElement _

@@ -906,8 +906,8 @@ struct
             ())
           EnvMap.empty
       in
-      let depends_of_declared_module
-          { Ast.Statement.DeclareModule.id = _; body; kind = _; comments = _ } =
+      let depends_of_declared_namespace
+          { Ast.Statement.DeclareNamespace.id = _; body; comments = _ } =
         depends_of_node
           (fun visitor ->
             let open Flow_ast_mapper in
@@ -1110,7 +1110,7 @@ struct
             EnvMap.empty
         | Some e -> depends_of_expression ~for_expression_writes:true e EnvMap.empty
       in
-      let depends_of_binding bind =
+      let rec depends_of_binding bind =
         let state =
           if kind = Env_api.PatternLoc || kind = Env_api.FunctionParamLoc then
             EnvMap.empty
@@ -1119,6 +1119,7 @@ struct
         in
         match bind with
         | Root root -> depends_of_root state root
+        | Hooklike bind -> depends_of_binding bind
         | Select { selector; parent = (parent_loc, _) } ->
           let state = depends_of_selector state selector in
           depends_of_node
@@ -1182,9 +1183,7 @@ struct
           EnvMap.empty
       | Component { tparams_map; component; component_loc = _ } ->
         depends_of_component tparams_map component EnvMap.empty
-      | Class { class_; class_loc = _; class_implicit_this_tparam = _; this_super_write_locs = _ }
-        ->
-        depends_of_class class_
+      | Class { class_; class_loc = _; this_super_write_locs = _ } -> depends_of_class class_
       | DeclaredClass (_, decl) -> depends_of_declared_class decl
       | DeclaredComponent (loc, decl) -> depends_of_declared_component loc decl
       | TypeAlias (_, alias) -> depends_of_alias alias
@@ -1194,16 +1193,7 @@ struct
       | Interface (_, inter) -> depends_of_interface inter
       | GeneratorNext (Some { return_annot; tparams_map; _ }) ->
         depends_of_annotation tparams_map return_annot EnvMap.empty
-      | DeclaredModule (_, module_) -> depends_of_declared_module module_
-      | CJSModuleExportsType (Env_api.CJSModuleExports loc) ->
-        EnvMap.singleton (Env_api.OrdinaryNameLoc, loc) (Nel.one loc)
-      | CJSModuleExportsType (Env_api.CJSExportNames named) ->
-        named
-        |> SMap.values
-        |> List.map (fun (_key_loc, def_loc) ->
-               ((Env_api.OrdinaryNameLoc, def_loc), Nel.one def_loc)
-           )
-        |> EnvMap.of_list
+      | DeclaredNamespace (_, ns) -> depends_of_declared_namespace ns
       | GeneratorNext None -> EnvMap.empty
       | Enum _ ->
         (* Enums don't contain any code or type references, they're literal-like *) EnvMap.empty
@@ -1223,6 +1213,7 @@ struct
           false
         | Select { selector = Computed _; _ } -> false
         | Select { parent = (_, binding); _ } -> bind_loop binding
+        | Hooklike binding -> bind_loop binding
       in
       let rec expression_resolvable (_, expr) =
         (* A variable read or member expression is assumed to be recursively resolvable if the
@@ -1269,7 +1260,7 @@ struct
       | MissingThisAnnot
       | DeclaredComponent _
       | DeclaredClass _
-      | DeclaredModule _
+      | DeclaredNamespace _
       | Function
           {
             synthesizable_from_annotation = FunctionSynthesizable | FunctionPredicateSynthesizable _;
@@ -1283,13 +1274,12 @@ struct
       | OpAssign _
       | Function _
       | Enum _
-      | Import _
-      | CJSModuleExportsType _ ->
+      | Import _ ->
         false
   end
 
   let annotation_locs scopes providers kind loc =
-    let bind_loop b =
+    let rec bind_loop b =
       match b with
       | Root CatchUnannotated
       | Root (UnannotatedParameter _)
@@ -1341,6 +1331,7 @@ struct
         with
         | Scope_api.With_ALoc.Missing_def _ -> []
       end
+      | Hooklike bind -> bind_loop bind
       | Select _ -> []
     in
     function
@@ -1360,8 +1351,7 @@ struct
     | DeclaredClass _
     | DeclaredComponent _
     | ExpressionDef _
-    | DeclaredModule _
-    | CJSModuleExportsType _
+    | DeclaredNamespace _
     | MissingThisAnnot
     | GeneratorNext (Some _) ->
       []

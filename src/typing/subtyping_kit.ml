@@ -120,8 +120,8 @@ module Make (Flow : INPUT) : OUTPUT = struct
         (* Already an unsupported-syntax error on the definition side of the function. *)
         ()
       | Ok map ->
-        let (lreason, pmap1, _nmap1) = pred1 in
-        let (ureason, pmap2, nmap2) = pred2 in
+        let (lreason, (lazy (pmap1, _nmap1))) = pred1 in
+        let (ureason, (lazy (pmap2, nmap2))) = pred2 in
         if SMap.is_empty map then (
           if not (TypeUtil.pred_map_implies pmap1 pmap2) then
             add_output
@@ -606,12 +606,10 @@ module Make (Flow : INPUT) : OUTPUT = struct
       rec_flow_t cx trace ~use_op (t, u)
     | (ThisTypeAppT (reason_tapp, c, this, ts), _) ->
       let reason_op = reason_of_t u in
-      let tc = specialize_class cx trace ~reason_op ~reason_tapp c ts in
-      instantiate_this_class cx trace reason_tapp tc this (Upper (UseT (use_op, u)))
+      instantiate_this_class cx trace ~reason_op ~reason_tapp c ts this (Upper (UseT (use_op, u)))
     | (_, ThisTypeAppT (reason_tapp, c, this, ts)) ->
       let reason_op = reason_of_t l in
-      let tc = specialize_class cx trace ~reason_op ~reason_tapp c ts in
-      instantiate_this_class cx trace reason_tapp tc this (Lower (use_op, l))
+      instantiate_this_class cx trace ~reason_op ~reason_tapp c ts this (Lower (use_op, l))
     (* If we have a TypeAppT (c, ts) ~> TypeAppT (c, ts) then we want to
      * concretize both cs to PolyTs so that we may referentially compare them.
      * We cannot compare the non-concretized versions since they may have been
@@ -627,20 +625,24 @@ module Make (Flow : INPUT) : OUTPUT = struct
      * The next step happens back in flow_js.ml, at the cases for a
      * ConcretizeTypeAppsT use type.
      *)
-    | ( TypeAppT { reason = r1; use_op = op1; type_ = c1; targs = ts1; use_desc = _ },
-        TypeAppT { reason = r2; use_op = op2; type_ = c2; targs = ts2; use_desc = _ }
+    | ( TypeAppT
+          { reason = r1; use_op = op1; type_ = c1; targs = ts1; from_value = fv1; use_desc = _ },
+        TypeAppT
+          { reason = r2; use_op = op2; type_ = c2; targs = ts2; from_value = fv2; use_desc = _ }
       ) ->
       if TypeAppExpansion.push_unless_loop cx (c1, ts1) then (
         if TypeAppExpansion.push_unless_loop cx (c2, ts2) then (
           rec_flow
             cx
             trace
-            (c2, ConcretizeTypeAppsT (use_op, (ts2, op2, r2), (c1, ts1, op1, r1), true));
+            (c2, ConcretizeTypeAppsT (use_op, (ts2, fv2, op2, r2), (c1, ts1, fv1, op1, r1), true));
           TypeAppExpansion.pop cx
         );
         TypeAppExpansion.pop cx
       )
-    | (TypeAppT { reason = reason_tapp; use_op = use_op_tapp; type_; targs; use_desc }, _) ->
+    | ( TypeAppT { reason = reason_tapp; use_op = use_op_tapp; type_; targs; from_value; use_desc },
+        _
+      ) ->
       if TypeAppExpansion.push_unless_loop cx (type_, targs) then (
         let reason_op = reason_of_t u in
         let t =
@@ -649,16 +651,35 @@ module Make (Flow : INPUT) : OUTPUT = struct
             cx
             reason_tapp
             ~use_desc
-            (mk_typeapp_instance cx ~trace ~use_op:use_op_tapp ~reason_op ~reason_tapp type_ targs)
+            (mk_typeapp_instance
+               cx
+               ~trace
+               ~use_op:use_op_tapp
+               ~reason_op
+               ~reason_tapp
+               ~from_value
+               type_
+               targs
+            )
         in
         rec_flow_t cx trace ~use_op (t, u);
         TypeAppExpansion.pop cx
       )
-    | (_, TypeAppT { reason = reason_tapp; use_op = use_op_tapp; type_; targs; use_desc }) ->
+    | ( _,
+        TypeAppT { reason = reason_tapp; use_op = use_op_tapp; type_; targs; from_value; use_desc }
+      ) ->
       if TypeAppExpansion.push_unless_loop cx (type_, targs) then (
         let reason_op = reason_of_t l in
         let t =
-          mk_typeapp_instance cx ~trace ~use_op:use_op_tapp ~reason_op ~reason_tapp type_ targs
+          mk_typeapp_instance
+            cx
+            ~trace
+            ~use_op:use_op_tapp
+            ~reason_op
+            ~reason_tapp
+            ~from_value
+            type_
+            targs
         in
         (* We do the slingshot trick here so that we flow l to the results of making the typeapp
          * instead of adding another lower bound to t. We can't use an Annot here, which would do
@@ -996,7 +1017,7 @@ module Make (Flow : INPUT) : OUTPUT = struct
         else
           false
       in
-      let node = get_builtin_type cx ~use_desc:true renders_r (OrdinaryName "React$Node") in
+      let node = get_builtin_type cx ~use_desc:true renders_r "React$Node" in
       if union_contains_instantiable_tvars || not (speculative_subtyping_succeeds cx node u) then
         SpeculationKit.try_union cx trace use_op l r rep
     | (_, UnionT (r, rep)) ->
@@ -1188,43 +1209,20 @@ module Make (Flow : INPUT) : OUTPUT = struct
     (* TODO: ideally we'd do the same when lower bounds flow to a
      * this-abstracted class, but fixing the class is easier; might need to
      * revisit *)
-    | (_, ThisClassT (r, i, this, this_name)) ->
+    | (_, DefT (class_r, ClassT (ThisInstanceT (inst_r, i, this, this_name)))) ->
       let reason = reason_of_t l in
-      rec_flow cx trace (l, UseT (use_op, fix_this_class cx reason (r, i, this, this_name)))
-    | ( DefT
-          ( reason_tapp,
-            PolyT
-              { tparams_loc; tparams = ids; t_out = DefT (_, ReactAbstractComponentT _) as t; _ }
-          ),
-        DefT (_, TypeT (RenderTypeKind, _))
-      ) ->
-      let reason_op = reason_of_t u in
-      let targs = Nel.to_list ids |> List.map (fun _ -> AnyT.untyped reason_op) in
-      let (t_, _) =
-        instantiate_poly_with_targs
-          cx
-          trace
-          ~use_op
-          ~reason_op
-          ~reason_tapp
-          (tparams_loc, ids, t)
-          targs
-      in
-      rec_flow_t cx trace ~use_op (t_, u)
-    | (DefT (reason_tapp, PolyT { tparams_loc; tparams = ids; _ }), DefT (_, TypeT (_, t))) ->
-      rec_flow_t cx trace ~use_op:unknown_use (AnyT.error reason_tapp, t);
-      add_output
+      rec_flow
         cx
-        ~trace
-        (Error_message.EMissingTypeArgs
-           {
-             reason_op = reason_of_t u;
-             reason_tapp;
-             reason_arity = mk_poly_arity_reason tparams_loc;
-             min_arity = poly_minimum_arity ids;
-             max_arity = Nel.length ids;
-           }
+        trace
+        ( l,
+          UseT
+            ( use_op,
+              DefT (class_r, ClassT (fix_this_instance cx reason (inst_r, i, this, this_name)))
+            )
         )
+    | (_, ThisInstanceT (r, i, this, this_name)) ->
+      let reason = reason_of_t l in
+      rec_flow cx trace (l, UseT (use_op, fix_this_instance cx reason (r, i, this, this_name)))
     (*
      * This rule is hit when a polymorphic type appears outside a
      * type application expression - i.e. not followed by a type argument list
@@ -1241,9 +1239,16 @@ module Make (Flow : INPUT) : OUTPUT = struct
       in
       rec_flow_t cx trace ~use_op (t_, u)
     (* when a this-abstracted class flows to upper bounds, fix the class *)
-    | (ThisClassT (r, i, this, this_name), _) ->
+    | (DefT (class_r, ClassT (ThisInstanceT (inst_r, i, this, this_name))), _) ->
       let reason = reason_of_t u in
-      rec_flow_t cx trace ~use_op (fix_this_class cx reason (r, i, this, this_name), u)
+      rec_flow_t
+        cx
+        trace
+        ~use_op
+        (DefT (class_r, ClassT (fix_this_instance cx reason (inst_r, i, this, this_name))), u)
+    | (ThisInstanceT (r, i, this, this_name), _) ->
+      let reason = reason_of_t u in
+      rec_flow_t cx trace ~use_op (fix_this_instance cx reason (r, i, this, this_name), u)
     (*****************************)
     (* React Abstract Components *)
     (*****************************)
@@ -1316,7 +1321,7 @@ module Make (Flow : INPUT) : OUTPUT = struct
       rec_flow cx trace (l, ReactKitT (use_op, reasonl, React.ConfigCheck config));
 
       (* Ensure this is a function component *)
-      rec_flow_t ~use_op cx trace (return_t, get_builtin_type cx reasonl (OrdinaryName "React$Node"));
+      rec_flow_t ~use_op cx trace (return_t, get_builtin_type cx reasonl "React$Node");
 
       (* check rendered elements are covariant *)
       rec_flow_t cx trace ~use_op (return_t, renders);
@@ -1482,7 +1487,7 @@ module Make (Flow : INPUT) : OUTPUT = struct
         )
     (* Exiting the renders world *)
     | (DefT (r, RendersT (NominalRenders _)), u) ->
-      let mixed_element = get_builtin_type cx r (OrdinaryName "React$MixedElement") in
+      let mixed_element = get_builtin_type cx r "React$MixedElement" in
       rec_flow_t cx trace ~use_op (mixed_element, u)
     | ( DefT
           ( r,
@@ -1552,6 +1557,47 @@ module Make (Flow : INPUT) : OUTPUT = struct
       in
       multiflow_subtype cx trace ~use_op ureason args ft1;
 
+      begin
+        match (ft1.hook, ft2.hook) with
+        | (AnyHook, _)
+        | (_, AnyHook)
+        | (NonHook, NonHook)
+        | ((HookDecl _ | HookAnnot), HookAnnot) ->
+          ()
+        | (HookDecl a, HookDecl b) when ALoc.equal_id a b -> ()
+        | ((HookDecl _ | HookAnnot), NonHook) ->
+          add_output
+            cx
+            ~trace
+            (Error_message.EHookIncompatible
+               {
+                 use_op;
+                 lower = lreason;
+                 upper = ureason;
+                 lower_is_hook = true;
+                 hook_is_annot = ft1.hook = HookAnnot;
+               }
+            )
+        | (NonHook, (HookDecl _ | HookAnnot)) ->
+          add_output
+            cx
+            ~trace
+            (Error_message.EHookIncompatible
+               {
+                 use_op;
+                 lower = lreason;
+                 upper = ureason;
+                 lower_is_hook = false;
+                 hook_is_annot = ft2.hook = HookAnnot;
+               }
+            )
+        | ((HookDecl _ | HookAnnot), HookDecl _) ->
+          add_output
+            cx
+            ~trace
+            (Error_message.EHookUniqueIncompatible { use_op; lower = lreason; upper = ureason })
+      end;
+
       (* Return type subtyping *)
       let ret_use_op =
         Frame
@@ -1612,6 +1658,9 @@ module Make (Flow : INPUT) : OUTPUT = struct
     | (_, DefT (reason, CharSetT _)) -> rec_flow_t cx trace ~use_op (l, StrT.why reason)
     (* Custom functions are still functions, so they have all the prototype properties *)
     | (CustomFunT (r, _), AnyT _) -> rec_flow_t cx trace ~use_op (FunProtoT r, u)
+    (* unwrap namespace type into object type, drop all information about types in the namespace *)
+    | (NamespaceT { values_type; types_tmap = _ }, _) -> rec_flow_t cx trace ~use_op (values_type, u)
+    | (l, NamespaceT { values_type; types_tmap = _ }) -> rec_flow_t cx trace ~use_op (l, values_type)
     (*********************************************)
     (* object types deconstruct into their parts *)
     (*********************************************)
@@ -1623,7 +1672,7 @@ module Make (Flow : INPUT) : OUTPUT = struct
       let u_deft = u in
       Type_inference_hooks_js.dispatch_obj_to_obj_hook cx l u_deft;
       let print_fast_path = Context.is_verbose cx in
-      if lflds = uflds then (
+      if Properties.equal_id lflds uflds then (
         if print_fast_path then prerr_endline "ObjT ~> ObjT fast path: yes"
       ) else (
         if print_fast_path then prerr_endline "ObjT ~> ObjT fast path: no";
@@ -1884,10 +1933,10 @@ module Make (Flow : INPUT) : OUTPUT = struct
       let use_op = Frame (ArrayElementCompatibility { lower = r1; upper = r2 }, use_op) in
       rec_flow cx trace (t1, UseT (use_op, t2))
     | (DefT (_, InstanceT _), DefT (r2, ArrT (ArrayAT { elem_t; _ }))) ->
-      let arrt = get_builtin_typeapp cx r2 (OrdinaryName "Array") [elem_t] in
+      let arrt = get_builtin_typeapp cx r2 "Array" [elem_t] in
       rec_flow cx trace (l, UseT (use_op, arrt))
     | (DefT (_, InstanceT _), DefT (r2, ArrT (ROArrayAT (elemt, _)))) ->
-      let arrt = get_builtin_typeapp cx r2 (OrdinaryName "$ReadOnlyArray") [elemt] in
+      let arrt = get_builtin_typeapp cx r2 "$ReadOnlyArray" [elemt] in
       rec_flow cx trace (l, UseT (use_op, arrt))
     (**************************************************)
     (* instances of classes follow declared hierarchy *)
@@ -1897,55 +1946,6 @@ module Make (Flow : INPUT) : OUTPUT = struct
     (********************************************************)
     (* runtime types derive static types through annotation *)
     (********************************************************)
-    | (DefT (_, ClassT it), DefT (r, TypeT (_, t))) ->
-      (* a class value annotation becomes the instance type *)
-      rec_flow cx trace (it, BecomeT { reason = r; t; empty_success = true })
-    | (DefT (_, TypeT (_, l)), DefT (_, TypeT (_, u))) ->
-      rec_unify cx trace ~use_op ~unify_any:true l u
-    | (DefT (lreason, EnumObjectT enum), DefT (_r, TypeT (_, t))) ->
-      (* an enum object value annotation becomes the enum type *)
-      let enum_type = mk_enum_type lreason enum in
-      rec_unify cx trace ~use_op enum_type t
-    | (DefT (enum_reason, EnumT _), DefT (reason, TypeT (_, t))) ->
-      rec_unify cx trace ~use_op (AnyT.error reason) t;
-      add_output cx ~trace Error_message.(EEnumMemberUsedAsType { reason; enum_reason })
-    | (DefT (reasonl, ReactAbstractComponentT _), DefT (r, TypeT (_, t))) ->
-      (* a component syntax value annotation becomes an element of that component *)
-      let elem =
-        let props =
-          let reason = update_desc_new_reason (fun desc -> RPropsOfComponent desc) reasonl in
-          mk_possibly_evaluated_destructor
-            cx
-            use_op
-            reason
-            l
-            ReactElementPropsType
-            (Eval.generate_id ())
-        in
-        let elem_reason =
-          let desc = react_element_desc_of_component_reason reasonl in
-          let annot_loc = loc_of_reason r in
-          annot_reason ~annot_loc (replace_desc_reason desc r)
-        in
-        get_builtin_typeapp cx ~use_desc:true elem_reason (OrdinaryName "React$Element") [l; props]
-      in
-      rec_unify cx trace ~use_op elem t
-    (* non-class/function values used in annotations are errors *)
-    | (_, DefT (reason_use, TypeT (_, t))) ->
-      (match l with
-      | DefT (_, EmptyT)
-      | AnyT (_, AnyError (Some MissingAnnotation)) ->
-        add_output cx ~trace Error_message.(EValueUsedAsType { reason_use });
-        rec_flow_t cx trace ~use_op:unknown_use (AnyT.error (reason_of_t l), t)
-      | AnyT (_, AnyError _) ->
-        (* Short-circut as we already error on the unresolved name. *)
-        rec_flow_t cx ~use_op:unknown_use trace (l, t)
-      | AnyT _ ->
-        rec_flow_t cx trace ~use_op:unknown_use (AnyT.error (reason_of_t l), t);
-        add_output cx ~trace Error_message.(EAnyValueUsedAsType { reason_use })
-      | _ ->
-        rec_flow_t cx trace ~use_op:unknown_use (AnyT.error (reason_of_t l), t);
-        add_output cx ~trace Error_message.(EValueUsedAsType { reason_use }))
     | (DefT (rl, ClassT l), DefT (_, ClassT u)) ->
       rec_flow cx trace (reposition cx ~trace (loc_of_reason rl) l, UseT (use_op, u))
     | (DefT (_, FunT (static1, _)), DefT (_, ClassT (DefT (_, InstanceT { static = static2; _ }))))
@@ -2141,6 +2141,60 @@ module Make (Flow : INPUT) : OUTPUT = struct
     | (DefT (_, EnumT { enum_id = id1; _ }), DefT (_, EnumT { enum_id = id2; _ }))
       when ALoc.equal_id id1 id2 ->
       ()
+    | ( DefT
+          ( _,
+            EnumObjectT
+              {
+                enum_id = id1;
+                enum_name = n1;
+                members = m1;
+                representation_t = r1;
+                has_unknown_members = has_unknown1;
+              }
+          ),
+        DefT
+          ( _,
+            EnumObjectT
+              {
+                enum_id = id2;
+                enum_name = n2;
+                members = m2;
+                representation_t = r2;
+                has_unknown_members = has_unknown2;
+              }
+          )
+      )
+    | ( DefT
+          ( _,
+            EnumT
+              {
+                enum_id = id1;
+                enum_name = n1;
+                members = m1;
+                representation_t = r1;
+                has_unknown_members = has_unknown1;
+                _;
+              }
+          ),
+        DefT
+          ( _,
+            EnumT
+              {
+                enum_id = id2;
+                enum_name = n2;
+                members = m2;
+                representation_t = r2;
+                has_unknown_members = has_unknown2;
+              }
+          )
+      )
+      when TypeUtil.nominal_id_have_same_logical_module
+             ~file_options:Context.((metadata cx).file_options)
+             (id1, Some n1)
+             (id2, Some n2)
+           && SSet.equal (SSet.of_list @@ SMap.keys m1) (SSet.of_list @@ SMap.keys m2)
+           && has_unknown1 = has_unknown2 ->
+      rec_flow_t cx trace ~use_op (r1, r2)
     | (DefT (enum_reason, EnumT { representation_t; _ }), t)
       when TypeUtil.quick_subtype representation_t t ->
       let representation_type =
@@ -2152,11 +2206,18 @@ module Make (Flow : INPUT) : OUTPUT = struct
         | DefT (_, BigIntT _) -> Some "bigint"
         | _ -> None
       in
+      let casting_syntax = Context.casting_syntax cx in
       add_output
         cx
         ~trace
         (Error_message.EEnumIncompatible
-           { reason_lower = enum_reason; reason_upper = reason_of_t t; use_op; representation_type }
+           {
+             reason_lower = enum_reason;
+             reason_upper = reason_of_t t;
+             use_op;
+             representation_type;
+             casting_syntax;
+           }
         )
     | ( GenericT ({ bound = bound1; id = id1; reason = reason1; _ } as g1),
         GenericT ({ bound = bound2; id = id2; reason = reason2; _ } as g2)
@@ -2176,24 +2237,24 @@ module Make (Flow : INPUT) : OUTPUT = struct
     | (GenericT { reason; bound; _ }, _) ->
       rec_flow_t cx trace ~use_op (reposition_reason cx reason bound, u)
     | (_, GenericT { reason; name; _ }) ->
-      let desc = RIncompatibleInstantiation (Subst_name.string_of_subst_name name) in
+      let desc = RIncompatibleInstantiation name in
       let bot = DefT (replace_desc_reason desc reason, EmptyT) in
       rec_flow_t cx trace ~use_op (l, bot)
     | (ObjProtoT reason, _) ->
       let use_desc = true in
-      let obj_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Object") in
+      let obj_proto = get_builtin_type cx reason ~use_desc "Object" in
       rec_flow_t cx trace ~use_op (obj_proto, u)
     | (_, ObjProtoT reason) ->
       let use_desc = true in
-      let obj_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Object") in
+      let obj_proto = get_builtin_type cx reason ~use_desc "Object" in
       rec_flow_t cx trace ~use_op (l, obj_proto)
     | (FunProtoT reason, _) ->
       let use_desc = true in
-      let fun_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Function") in
+      let fun_proto = get_builtin_type cx reason ~use_desc "Function" in
       rec_flow_t cx trace ~use_op (fun_proto, u)
     | (_, FunProtoT reason) ->
       let use_desc = true in
-      let fun_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Function") in
+      let fun_proto = get_builtin_type cx reason ~use_desc "Function" in
       rec_flow_t cx trace ~use_op (l, fun_proto)
     | (DefT (lreason, MixedT Mixed_function), DefT (ureason, FunT _)) ->
       add_output
@@ -2212,6 +2273,13 @@ module Make (Flow : INPUT) : OUTPUT = struct
     | (FunProtoBindT reason, _)
     | (FunProtoCallT reason, _) ->
       rec_flow_t cx trace ~use_op (FunProtoT reason, u)
+    | (InternalT (EnforceUnionOptimized reason), _) ->
+      add_output
+        cx
+        ~trace
+        (Error_message.EUnionOptimizationOnNonUnion
+           { loc = loc_of_reason reason; arg = reason_of_t u }
+        )
     | (_, _) ->
       add_output
         cx

@@ -59,6 +59,7 @@ module type BASE = sig
     use_op:Type.use_op ->
     reason_op:Reason.reason ->
     reason_tapp:Reason.reason ->
+    from_value:bool ->
     ?cache:bool ->
     Type.t ->
     Type.t list ->
@@ -70,6 +71,7 @@ module type BASE = sig
     use_op:Type.use_op ->
     reason_op:Reason.reason ->
     reason_tapp:Reason.reason ->
+    from_value:bool ->
     Type.t ->
     Type.t list ->
     Type.t
@@ -98,22 +100,9 @@ end
 
 module type BUILTINS = sig
   val get_builtin_type :
-    Context.t -> ?trace:Type.trace -> Reason.reason -> ?use_desc:bool -> name -> Type.t
+    Context.t -> ?trace:Type.trace -> Reason.reason -> ?use_desc:bool -> string -> Type.t
 
-  val get_builtin_result :
-    Context.t -> name -> reason -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result
-
-  val get_builtin : Context.t -> name -> reason -> Type.t
-
-  val get_builtin_typeapp : Context.t -> reason -> ?use_desc:bool -> name -> Type.t list -> Type.t
-
-  val get_builtin_module : Context.t -> ALoc.t -> string -> Type.tvar
-
-  val lookup_builtin_strict : Context.t -> name -> reason -> Type.t
-
-  val lookup_builtin_strict_tvar : Context.t -> name -> reason -> Type.ident
-
-  val lookup_builtin_with_default : Context.t -> name -> Type.t -> Type.t
+  val get_builtin_typeapp : Context.t -> reason -> ?use_desc:bool -> string -> Type.t list -> Type.t
 
   val perform_read_prop_action :
     Context.t ->
@@ -131,6 +120,9 @@ module type SUBTYPING = sig
   val speculative_subtyping_succeeds : Context.t -> Type.t -> Type.t -> bool
 
   val possible_concrete_types_for_inspection : Context.t -> Reason.reason -> Type.t -> Type.t list
+
+  val possible_concrete_types_for_imports_exports :
+    Context.t -> Reason.reason -> Type.t -> Type.t list
 
   val reposition_reason :
     Context.t -> ?trace:Type.trace -> Reason.reason -> ?use_desc:bool -> Type.t -> Type.t
@@ -165,7 +157,15 @@ module type SUBTYPING = sig
     unit
 
   val instantiate_this_class :
-    Context.t -> Type.trace -> Reason.reason -> Type.t -> Type.t -> Type.cont -> unit
+    Context.t ->
+    Type.trace ->
+    reason_op:Reason.reason ->
+    reason_tapp:Reason.reason ->
+    Type.t ->
+    Type.t list option ->
+    Type.t ->
+    Type.cont ->
+    unit
 
   val instantiate_poly_with_targs :
     Context.t ->
@@ -190,15 +190,6 @@ module type SUBTYPING = sig
     ?unify_bounds:bool ->
     ALoc.t * Type.typeparam Nel.t * Type.t ->
     Type.t * (Type.t * Subst_name.t) list
-
-  val specialize_class :
-    Context.t ->
-    Type.trace ->
-    reason_op:reason ->
-    reason_tapp:reason ->
-    Type.t ->
-    Type.t list option ->
-    Type.t
 
   val mk_typeapp_of_poly :
     Context.t ->
@@ -244,7 +235,7 @@ module type EVAL = sig
     Type.t ->
     Type.destructor ->
     Type.Eval.id ->
-    bool * Type.t
+    Type.t
 
   val mk_possibly_evaluated_destructor :
     Context.t -> Type.use_op -> Reason.reason -> Type.t -> Type.destructor -> Type.Eval.id -> Type.t
@@ -278,8 +269,6 @@ module type S = sig
   include SUBTYPING
 
   include CHECK_POLARITY
-
-  val mk_typeof_annotation : Context.t -> ?trace:Type.trace -> reason -> Type.t -> Type.t
 
   val resolve_spread_list :
     Context.t ->

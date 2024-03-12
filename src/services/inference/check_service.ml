@@ -20,17 +20,20 @@ type check_file =
   * (FindRefsTypes.single_ref list, string) result
 
 let unknown_module_t cx _mref m =
-  let m_name = Reason.internal_module_name (Modulename.to_string m) in
+  let module_name = Modulename.to_string m in
   let builtins = Context.builtins cx in
-  Builtins.get_builtin builtins m_name ~on_missing:(fun () -> Error m_name)
+  match Builtins.get_builtin_module_opt builtins module_name with
+  | Some t -> Ok t
+  | None -> Error (Reason.internal_module_name module_name)
 
 let unchecked_module_t cx file_key mref =
   let desc = Reason.RUntypedModule mref in
-  let m_name = Reason.internal_module_name mref in
   let loc = ALoc.of_loc Loc.{ none with source = Some file_key } in
   let reason = Reason.mk_reason desc loc in
-  let default = Type.(AnyT (reason, Untyped)) in
-  Flow_js_utils.lookup_builtin_with_default cx m_name default
+  let builtins = Context.builtins cx in
+  Base.Option.value
+    ~default:Type.(AnyT (reason, Untyped))
+    (Builtins.get_builtin_module_opt builtins mref)
 
 let get_lint_severities metadata options =
   let lint_severities = Options.lint_severities options in
@@ -79,6 +82,7 @@ let mk_check_file ~reader ~options ~master_cx ~cache () =
           | None -> Ok (unchecked_module_t cx dep_file mref))))
   and sig_module_t cx file_key parse =
     let create_file = dep_file file_key parse in
+    Context.add_reachable_dep cx file_key;
     let leader =
       lazy
         (Parsing_heaps.Reader_dispatcher.get_leader_unsafe ~reader file_key parse
@@ -298,7 +302,7 @@ let mk_check_file ~reader ~options ~master_cx ~cache () =
         ~f:(fun () ->
           let lint_severities = get_lint_severities metadata options in
           let tast = Type_inference_js.infer_file cx file_key comments aloc_ast ~lint_severities in
-          Merge_js.post_merge_checks cx aloc_ast metadata;
+          Merge_js.post_merge_checks cx aloc_ast tast metadata;
           Context.reset_errors cx (Flow_error.post_process_errors (Context.errors cx));
           tast)
     in

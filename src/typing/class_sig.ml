@@ -5,13 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Ast = Flow_ast
 module Flow = Flow_js
 open Reason
 open Utils_js
 include Class_sig_intf
 
 module Make
+    (ConsGen : Type_annotation_sig.ConsGen)
     (CT : Func_class_sig_types.Config.S)
     (C : Func_params.Config with module Types := CT)
     (P : Func_params.S with module Config_types := CT and module Config := C)
@@ -281,8 +281,6 @@ module Make
 
   let mem_constructor { constructor; _ } = constructor <> []
 
-  let mem_field x = with_sig (fun s -> SMap.mem x s.fields)
-
   let iter_methods_with_name f s =
     SMap.iter (f %> Nel.iter) s.methods;
     SMap.iter f s.private_methods;
@@ -302,19 +300,6 @@ module Make
     | Interface _ -> None
 
   let this_or_mixed loc = this_t %> Base.Option.value ~default:(Type.dummy_this loc)
-
-  let this_or_mixed_of_t ~static x =
-    let loc =
-      if static then
-        loc_of_reason x.static.reason
-      else
-        loc_of_reason x.instance.reason
-    in
-    let this_t = this_or_mixed loc x in
-    if static then
-      TypeUtil.class_type this_t
-    else
-      this_t
 
   let tparams_with_this tparams this_tp =
     (* Use the loc for the original tparams, or just the loc for the this type if there are no
@@ -466,12 +451,8 @@ module Make
     (initialized_fields, fields, methods, call)
 
   let specialize cx use_op targs c =
-    let open Type in
-    let open TypeUtil in
-    let reason = reason_of_t c in
-    Tvar.mk_where cx reason (fun tvar ->
-        Flow.flow cx (c, SpecializeT (use_op, reason, reason, false, targs, tvar))
-    )
+    let reason = TypeUtil.reason_of_t c in
+    ConsGen.specialize cx c use_op reason reason targs
 
   let statictype cx static_proto x =
     let s = x.static in
@@ -557,24 +538,13 @@ module Make
         methods_to_prop_map ~cx ~this_default:(private_this_type s.static) s.static.private_methods;
     }
 
-  let mk_this self cx reason tparams =
-    (* We haven't computed the instance type yet, but we can still capture a
-       reference to it using the class name (as long as the class has a name).
-       We need this reference to constrain the `this` in the class. *)
-    let rec_instance_type =
-      match tparams with
-      | None -> Flow.mk_instance cx reason self
-      | _ ->
-        let open Type in
-        let (_, targs) = Flow_js_utils.mk_tparams cx (TypeParams.to_list tparams) in
-        TypeUtil.typeapp ~use_desc:false reason self targs
-    in
+  let mk_this ~self cx reason =
     let this_reason = replace_desc_reason RThisType reason in
     let this_tp =
       {
         Type.name = Subst_name.Name "this";
         reason = this_reason;
-        bound = rec_instance_type;
+        bound = self;
         polarity = Polarity.Positive;
         default = None;
         is_this = true;
@@ -595,8 +565,8 @@ module Make
             match targs_opt with
             | None ->
               let reason = annot_reason ~annot_loc @@ repos_reason annot_loc (reason_of_t c) in
-              Flow.mk_instance cx reason c
-            | Some targs -> typeapp_annot ~use_desc:false annot_loc c targs)
+              ConsGen.mk_instance cx reason c
+            | Some targs -> typeapp_annot ~from_value:false ~use_desc:false annot_loc c targs)
           extends
       in
       (* If the interface definition includes a callable property, add the
@@ -670,7 +640,7 @@ module Make
       in
       (super, static_proto)
 
-  let thistype cx x =
+  let this_instance_type cx x =
     let { static = { reason = sreason; _ }; instance = { reason; _ }; _ } = x in
     let (super, static_proto) = supertype cx x in
     let implements =
@@ -684,20 +654,24 @@ module Make
               let reason =
                 annot_reason ~annot_loc @@ repos_reason annot_loc (TypeUtil.reason_of_t c)
               in
-              Flow.mk_instance cx reason c
-            | Some targs -> TypeUtil.typeapp_annot ~use_desc:false annot_loc c targs)
+              ConsGen.mk_instance cx reason c
+            | Some targs ->
+              TypeUtil.typeapp_annot ~from_value:false ~use_desc:false annot_loc c targs)
           implements
     in
     let (initialized_static_fields, static_objtype) = statictype cx static_proto x in
     let inst = insttype cx ~initialized_static_fields x in
-    let open Type in
-    let static = DefT (sreason, ObjT static_objtype) in
-    DefT (reason, InstanceT { static; super; implements; inst })
+    let static = Type.DefT (sreason, Type.ObjT static_objtype) in
+    (reason, { Type.static; super; implements; inst })
+
+  let thistype cx x =
+    let (reason, instance_t) = this_instance_type cx x in
+    Type.(DefT (reason, InstanceT instance_t))
 
   let check_methods cx def_reason x =
     let open Type in
     let self =
-      match x.super with
+      match x.Types.super with
       | Interface _ -> thistype cx x
       | Class { this_t; _ } -> this_t
     in
@@ -712,7 +686,7 @@ module Make
           in
           let reason = mk_reason (RMethod (Some name)) id_loc in
           let use_op = Op (ClassMethodDefinition { def = reason; name = def_reason }) in
-          Flow.flow cx (self, UseT (use_op, this_param)))
+          Context.add_post_inference_subtyping_check cx self use_op this_param)
         (F.this_param msig.F.Types.fparams)
     in
 
@@ -750,13 +724,13 @@ module Make
             match targs_opt with
             | None ->
               let reason = annot_reason ~annot_loc @@ repos_reason annot_loc (reason_of_t c) in
-              Flow.mk_instance cx reason c
-            | Some targs -> typeapp_annot ~use_desc:false annot_loc c targs
+              ConsGen.mk_instance cx reason c
+            | Some targs -> typeapp_annot ~from_value:false ~use_desc:false annot_loc c targs
           in
           let use_op =
             Op (ClassImplementsCheck { def = def_reason; name = reason; implements = reason_of_t i })
           in
-          Flow.flow cx (i, ImplementsT (use_op, this)))
+          Context.add_post_inference_validation_flow cx i (ImplementsT (use_op, this)))
         implements
 
   let check_super cx def_reason x =
@@ -797,28 +771,36 @@ module Make
 
     let (super, _) = supertype cx x in
     let use_op = Op (ClassExtendsCheck { def = def_reason; extends = reason_of_t super }) in
-    Flow.flow
+    Context.add_post_inference_validation_flow
       cx
-      ( super,
-        SuperT
-          ( use_op,
-            reason,
-            Derived
-              {
-                own = NameUtils.namemap_of_smap own;
-                proto = NameUtils.namemap_of_smap proto;
-                static = NameUtils.namemap_of_smap static;
-              }
-          )
+      super
+      (SuperT
+         ( use_op,
+           reason,
+           Derived
+             {
+               own = NameUtils.namemap_of_smap own;
+               proto = NameUtils.namemap_of_smap proto;
+               static = NameUtils.namemap_of_smap static;
+             }
+         )
       )
+
+  let check_signature_compatibility cx def_reason x =
+    check_super cx def_reason x;
+    check_implements cx def_reason x;
+    check_methods cx def_reason x
 
   (* TODO: Ideally we should check polarity for all class types, but this flag is
      flipped off for interface/declare class currently. *)
   let classtype cx ?(check_polarity = true) x =
-    let this = thistype cx x in
+    let (this_reason, this_instance_t) = this_instance_type cx x in
+    let this = Type.(DefT (this_reason, InstanceT this_instance_t)) in
+    let this_tparam = this_tparam x in
     let tparams_with_this =
-      this_tparam x |> Base.Option.value_map ~default:x.tparams ~f:(tparams_with_this x.tparams)
+      this_tparam |> Base.Option.value_map ~default:x.tparams ~f:(tparams_with_this x.tparams)
     in
+    let this_name = Subst_name.Name "this" in
     begin
       match tparams_with_this with
       | Some (_, tps) when check_polarity ->
@@ -829,21 +811,24 @@ module Make
             Subst_name.Map.empty
             tps
         in
-        Flow.check_polarity cx tparams Polarity.Positive this
+        (* Check delayed so that we don't have to force the currently unresolved OpenT
+         * with implicit this tparam. *)
+        Context.add_post_inference_polarity_check cx tparams Polarity.Positive this
       | _ -> ()
     end;
     let open TypeUtil in
     let (t_inner, t_outer) =
       if structural x then
-        let class_type = class_type ~structural:true this in
-        (class_type, class_type)
+        (this, class_type ~structural:true this)
       else
-        ( this_class_type this true (Subst_name.Name "this"),
-          this_class_type this false (Subst_name.Name "this")
+        ( Type.ThisInstanceT (this_reason, this_instance_t, true, this_name),
+          class_type
+            ~structural:false
+            (Type.ThisInstanceT (this_reason, this_instance_t, false, this_name))
         )
     in
     let poly t = poly_type_of_tparams (Type.Poly.generate_id ()) x.tparams t in
-    (poly t_inner, poly t_outer)
+    (t_inner, poly t_outer)
 
   let mk_class_binding _cx x = { Type.class_binding_id = x.id }
 
@@ -928,33 +913,4 @@ module Make
                SMap.iter field s.proto_fields
            )
     )
-
-  module This = struct
-    let is_bound_to_empty { super; _ } =
-      Type.(
-        match super with
-        | Class { this_t = DefT (_, EmptyT); _ } -> true
-        | _ -> false
-      )
-
-    exception FoundInClass
-
-    class detector =
-      object
-        inherit [ALoc.t] Flow_ast_mapper.mapper as super
-
-        method! generic_identifier_type (git : (ALoc.t, ALoc.t) Ast.Type.Generic.Identifier.t) =
-          let open Ast.Type.Generic.Identifier in
-          match git with
-          | Unqualified (_, { Ast.Identifier.name = "this"; comments = _ }) -> raise FoundInClass
-          | _ -> super#generic_identifier_type git
-      end
-
-    let in_class c =
-      try
-        (new detector)#class_ ALoc.none c |> ignore;
-        false
-      with
-      | FoundInClass -> true
-  end
 end

@@ -153,10 +153,7 @@ let file_input_of_text_document_position_opt ~client_id t =
 let file_key_of_file_input_without_env ~options ~libs file_input =
   let file_options = Options.file_options options in
   File_input.filename_of_file_input file_input
-  |> Files.filename_from_string
-       ~options:file_options
-       ~consider_libdefs:(Options.libdef_in_checking options)
-       ~libs
+  |> Files.filename_from_string ~options:file_options ~consider_libdefs:true ~libs
 
 let file_key_of_file_input ~options ~env file_input =
   file_key_of_file_input_without_env ~options ~libs:env.ServerEnv.libs file_input
@@ -172,14 +169,8 @@ let file_key_of_file_input ~options ~env file_input =
  *)
 let check_that_we_care_about_this_file =
   let is_stdin file_path = String.equal file_path "-" in
-  let check_file_not_ignored ~options ~file_options ~env ~file_path () =
-    if
-      Files.wanted
-        ~options:file_options
-        ~include_libdef:(Options.libdef_in_checking options)
-        env.ServerEnv.libs
-        file_path
-    then
+  let check_file_not_ignored ~file_options ~env ~file_path () =
+    if Files.wanted ~options:file_options ~include_libdef:true env.ServerEnv.libs file_path then
       Ok ()
     else
       Error "File is ignored"
@@ -225,16 +216,13 @@ let check_that_we_care_about_this_file =
     if is_stdin file_path then
       (* if we don't know the filename (stdin), assume it's ok *)
       Ok ()
-    else if
-      Options.libdef_in_checking options
-      && Files.is_in_flowlib (Options.file_options options) file_path
-    then
+    else if Files.is_in_flowlib (Options.file_options options) file_path then
       Ok ()
     else
       let file_path = Files.imaginary_realpath file_path in
       let file_options = Options.file_options options in
       Ok ()
-      >>= check_file_not_ignored ~options ~file_options ~env ~file_path
+      >>= check_file_not_ignored ~file_options ~env ~file_path
       >>= check_file_included ~options ~file_options ~file_path
       >>= check_is_flow_file ~file_options ~file_path
       >>= check_flow_pragma ~options ~content ~file_key
@@ -292,6 +280,7 @@ let autocomplete
     ~input
     ~cursor
     ~imports
+    ~imports_min_characters
     ~imports_ranked_usage
     ~imports_ranked_usage_boost_exact_match_min_length
     ~show_ranking_info =
@@ -344,21 +333,21 @@ let autocomplete
         ) ->
       Profiling_js.with_timer profiling ~timer:"GetResults" ~f:(fun () ->
           let open AutocompleteService_js in
+          let ac_options =
+            {
+              AutocompleteService_js.imports;
+              imports_min_characters;
+              imports_ranked_usage;
+              imports_ranked_usage_boost_exact_match_min_length;
+              show_ranking_info;
+            }
+          in
+          let exports = env.ServerEnv.exports in
+          let typing =
+            { AutocompleteService_js.exports; options; reader; cx; file_sig; ast; typed_ast }
+          in
           let (token_opt, ac_loc, ac_type_string, results_res) =
-            autocomplete_get_results
-              ~env
-              ~options
-              ~reader
-              ~cx
-              ~file_sig
-              ~ast
-              ~typed_ast
-              ~imports
-              ~imports_ranked_usage
-              ~imports_ranked_usage_boost_exact_match_min_length
-              ~show_ranking_info
-              trigger_character
-              cursor_loc
+            autocomplete_get_results typing ac_options trigger_character cursor_loc
           in
           let json_props_to_log =
             ("ac_type", Hh_json.JSON_String ac_type_string)
@@ -374,6 +363,7 @@ let autocomplete
             let open Hh_json in
             match results_res with
             | AcResult { result; errors_to_log } ->
+              let result = AcCompletion.to_server_prot_completion_t result in
               let { ServerProt.Response.Completion.items; is_incomplete = _ } = result in
               let result_string =
                 match (items, errors_to_log) with
@@ -548,6 +538,7 @@ let infer_type
     json;
     strip_root;
     expanded;
+    no_typed_ast_for_imports;
   } =
     input
   in
@@ -595,6 +586,7 @@ let infer_type
           ~omit_targ_defaults
           ~max_depth
           ~verbose_normalizer
+          ~no_typed_ast_for_imports
           file_key
           line
           column
@@ -612,7 +604,7 @@ let infer_type
       let get_def_documentation =
         match getdef_loc_result with
         | Ok [getdef_loc] ->
-          Find_documentation.jsdoc_of_getdef_loc ~current_ast:typed_ast ~reader getdef_loc
+          Find_documentation.jsdoc_of_getdef_loc ~ast ~reader getdef_loc
           |> Base.Option.bind ~f:Find_documentation.documentation_of_jsdoc
         | _ -> None
       in
@@ -1026,6 +1018,7 @@ let handle_autocomplete
     ~input
     ~cursor
     ~imports
+    ~imports_min_characters
     ~imports_ranked_usage
     ~imports_ranked_usage_boost_exact_match_min_length
     ~show_ranking_info =
@@ -1040,6 +1033,7 @@ let handle_autocomplete
           ~input
           ~cursor
           ~imports
+          ~imports_min_characters
           ~imports_ranked_usage
           ~imports_ranked_usage_boost_exact_match_min_length
           ~show_ranking_info
@@ -1359,6 +1353,7 @@ let get_ephemeral_handler genv command =
         imports_ranked_usage;
         show_ranking_info;
       } ->
+    let imports_min_characters = Options.autoimports_min_characters options in
     let imports_ranked_usage_boost_exact_match_min_length =
       Options.autoimports_ranked_by_usage_boost_exact_match_min_length options
     in
@@ -1372,6 +1367,7 @@ let get_ephemeral_handler genv command =
          ~input
          ~cursor
          ~imports
+         ~imports_min_characters
          ~imports_ranked_usage
          ~imports_ranked_usage_boost_exact_match_min_length
          ~show_ranking_info
@@ -1401,7 +1397,7 @@ let get_ephemeral_handler genv command =
     let fn =
       Files.filename_from_string
         ~options:file_options
-        ~consider_libdefs:(Options.libdef_in_checking options)
+        ~consider_libdefs:true
         ~libs:SSet.empty
         filename
     in
@@ -1998,6 +1994,7 @@ let handle_persistent_infer_type
       json = false;
       strip_root = None;
       expanded = false;
+      no_typed_ast_for_imports = false;
     }
   in
   let (result, extra_data) =
@@ -2080,6 +2077,7 @@ let handle_persistent_autocomplete_lsp
     && Options.autoimports options
   in
   let imports_ranked_usage = rank_autoimports_by_usage ~options client in
+  let imports_min_characters = Options.autoimports_min_characters options in
   let imports_ranked_usage_boost_exact_match_min_length =
     Options.autoimports_ranked_by_usage_boost_exact_match_min_length options
   in
@@ -2096,6 +2094,7 @@ let handle_persistent_autocomplete_lsp
       ~input:file_input
       ~cursor:(line, char)
       ~imports
+      ~imports_min_characters
       ~imports_ranked_usage
       ~imports_ranked_usage_boost_exact_match_min_length
       ~show_ranking_info
@@ -3032,7 +3031,7 @@ let handle_live_errors_request =
                   let file_options = Options.file_options options in
                   Files.filename_from_string
                     ~options:file_options
-                    ~consider_libdefs:(Options.libdef_in_checking options)
+                    ~consider_libdefs:true
                     ~libs:env.ServerEnv.libs
                     file_path
                 in

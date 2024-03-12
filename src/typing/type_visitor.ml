@@ -25,6 +25,7 @@ class ['a] t =
       | OpenT (r, id) -> self#tvar cx pole acc r id
       | DefT (_, t) -> self#def_type cx pole acc t
       | InternalT (ChoiceKitT (_, Trigger)) -> acc
+      | InternalT (EnforceUnionOptimized _) -> acc
       | FunProtoT _
       | FunProtoApplyT _
       | FunProtoBindT _
@@ -69,11 +70,12 @@ class ['a] t =
             module_available_platforms = _;
           } ->
         self#export_types cx pole acc exporttypes
+      | NamespaceT namespace_t -> self#namespace_type cx pole acc namespace_t
       | InternalT (ExtendsT (_, t1, t2)) ->
         let acc = self#type_ cx pole_TODO acc t1 in
         let acc = self#type_ cx pole_TODO acc t2 in
         acc
-      | ThisClassT (_, t, _, _) -> self#type_ cx pole acc t
+      | ThisInstanceT (_, t, _, _) -> self#instance_type cx pole acc t
       | ThisTypeAppT (_, t, this, ts_opt) ->
         let acc = self#type_ cx P.Positive acc t in
         let acc = self#type_ cx pole acc this in
@@ -82,7 +84,7 @@ class ['a] t =
            information should override this to be more specific. *)
         let acc = self#opt (self#list (self#type_ cx pole_TODO)) acc ts_opt in
         acc
-      | TypeAppT { reason = _; use_op = _; type_; targs; use_desc = _ } ->
+      | TypeAppT { reason = _; use_op = _; type_; targs; from_value = _; use_desc = _ } ->
         let acc = self#type_ cx P.Positive acc type_ in
         (* If we knew what `t` resolved to, we could determine the polarities for
            `ts`, but in general `t` might be unresolved. Subclasses which have more
@@ -110,7 +112,9 @@ class ['a] t =
         acc
       | EnumT enum
       | EnumObjectT enum ->
-        let { enum_id = _; members = _; representation_t; has_unknown_members = _ } = enum in
+        let { enum_name = _; enum_id = _; members = _; representation_t; has_unknown_members = _ } =
+          enum
+        in
         let acc = self#type_ cx pole acc representation_t in
         acc
       | FunT (static, funtype) ->
@@ -121,12 +125,7 @@ class ['a] t =
       | ArrT arrtype -> self#arr_type cx pole acc arrtype
       | CharSetT _ -> acc
       | ClassT t -> self#type_ cx pole acc t
-      | InstanceT { static; super; implements; inst } ->
-        let acc = self#type_ cx pole acc static in
-        let acc = self#type_ cx pole acc super in
-        let acc = self#list (self#type_ cx pole_TODO) acc implements in
-        let acc = self#inst_type cx pole acc inst in
-        acc
+      | InstanceT t -> self#instance_type cx pole acc t
       | NumericStrKeyT _
       | SingletonStrT _
       | SingletonNumT _
@@ -190,6 +189,7 @@ class ['a] t =
       | ArrP -> acc
       | PropExistsP _ -> acc
       | PropNonMaybeP _ -> acc
+      | NoP -> acc
       | LatentP ((lazy (_, _, t, targs, argts)), _) ->
         let acc = self#type_ cx P.Positive acc t in
         let acc = self#opt (self#list (self#targ cx pole_TODO)) acc targs in
@@ -205,6 +205,7 @@ class ['a] t =
       function
       | NonMaybeType
       | ReactDRO _
+      | MakeHooklike
       | OptionalIndexedAccessResultType _
       | OptionalIndexedAccessNonMaybeType { index = OptionalIndexedAccessStrLitIndex _ }
       | PropertyType _
@@ -318,7 +319,7 @@ class ['a] t =
       self#type_ cx pole acc t
 
     method exports cx pole acc id =
-      let visit acc { name_loc = _; preferred_def_locs = _; is_type_only_export = _; type_ } =
+      let visit acc { name_loc = _; preferred_def_locs = _; type_ } =
         self#type_ cx pole acc type_
       in
       Context.find_exports cx id |> self#namemap visit acc
@@ -335,7 +336,17 @@ class ['a] t =
       self#opt (self#type_ cx pole) acc default
 
     method fun_type cx pole acc ft =
-      let { this_t = (this_t, _); params; rest_param; return_t; predicate; def_reason = _ } = ft in
+      let {
+        this_t = (this_t, _);
+        params;
+        rest_param;
+        return_t;
+        predicate;
+        def_reason = _;
+        hook = _;
+      } =
+        ft
+      in
       let acc = self#type_ cx pole acc this_t in
       let acc = self#list (fun acc (_, t) -> self#type_ cx (P.inv pole) acc t) acc params in
       let acc = self#opt (fun acc (_, _, t) -> self#type_ cx (P.inv pole) acc t) acc rest_param in
@@ -348,7 +359,7 @@ class ['a] t =
       | PredBased p -> self#predicate_maps cx acc p
       | TypeGuardBased { param_name = _; type_guard = t } -> self#type_ cx pole acc t
 
-    method private predicate_maps cx acc (_, pmap, nmap) =
+    method private predicate_maps cx acc (_, (lazy (pmap, nmap))) =
       let acc = Key_map.fold (fun _ p acc -> self#predicate cx acc p) pmap acc in
       let acc = Key_map.fold (fun _ p acc -> self#predicate cx acc p) nmap acc in
       acc
@@ -369,6 +380,12 @@ class ['a] t =
       let acc = self#props cx pole acc props_tmap in
       let acc = self#type_ cx pole acc proto_t in
       let acc = self#opt (self#call_prop cx pole) acc call_t in
+      acc
+
+    method private namespace_type cx pole acc ns =
+      let { values_type; types_tmap } = ns in
+      let acc = self#type_ cx pole acc values_type in
+      let acc = self#props cx pole acc types_tmap in
       acc
 
     method private arr_type cx pole acc =
@@ -420,9 +437,17 @@ class ['a] t =
       let acc = self#props cx pole_TODO acc class_private_static_methods in
       acc
 
+    method instance_type cx pole acc { static; super; implements; inst } =
+      let acc = self#type_ cx pole acc static in
+      let acc = self#type_ cx pole acc super in
+      let acc = self#list (self#type_ cx pole_TODO) acc implements in
+      let acc = self#inst_type cx pole acc inst in
+      acc
+
     method private export_types cx pole acc e =
-      let { exports_tmap; cjs_export; has_every_named_export = _ } = e in
-      let acc = self#exports cx pole acc exports_tmap in
+      let { value_exports_tmap; type_exports_tmap; cjs_export; has_every_named_export = _ } = e in
+      let acc = self#exports cx pole acc value_exports_tmap in
+      let acc = self#exports cx pole acc type_exports_tmap in
       let acc = self#opt (self#type_ cx pole) acc cjs_export in
       acc
 

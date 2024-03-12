@@ -31,6 +31,8 @@ class virtual ['a] t :
 
     method inst_type : Context.t -> 'a -> Type.insttype -> Type.insttype
 
+    method instance_type : Context.t -> 'a -> Type.instance_t -> Type.instance_t
+
     method object_kit_spread_operand :
       Context.t -> 'a -> Type.Object.Spread.operand -> Type.Object.Spread.operand
 
@@ -40,6 +42,8 @@ class virtual ['a] t :
     method obj_flags : Context.t -> 'a -> Type.flags -> Type.flags
 
     method obj_type : Context.t -> 'a -> Type.objtype -> Type.objtype
+
+    method namespace_type : Context.t -> 'a -> Type.namespace_type -> Type.namespace_type
 
     method predicate : Context.t -> 'a -> Type.predicate -> Type.predicate
 

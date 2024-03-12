@@ -210,6 +210,7 @@ and Type : sig
       params: ('M, 'T) Params.t;
       return: ('M, 'T) return_annotation;
       comments: ('M, unit) Syntax.t option;
+      hook: bool;
     }
 
     and ('M, 'T) return_annotation =
@@ -1107,14 +1108,9 @@ and Statement : sig
       | Identifier of ('M, 'T) Identifier.t
       | Literal of ('T * 'M StringLiteral.t)
 
-    and module_kind =
-      | CommonJS
-      | ES
-
     and ('M, 'T) t = {
       id: ('M, 'T) id;
       body: 'M * ('M, 'T) Block.t;
-      kind: module_kind;
       comments: ('M, unit) Syntax.t option;
     }
     [@@deriving show]
@@ -1123,6 +1119,15 @@ and Statement : sig
   module DeclareModuleExports : sig
     type ('M, 'T) t = {
       annot: ('M, 'T) Type.annotation;
+      comments: ('M, unit) Syntax.t option;
+    }
+    [@@deriving show]
+  end
+
+  module DeclareNamespace : sig
+    type ('M, 'T) t = {
+      id: ('M, 'T) Identifier.t;
+      body: 'M * ('M, 'T) Block.t;
       comments: ('M, unit) Syntax.t option;
     }
     [@@deriving show]
@@ -1159,7 +1164,7 @@ and Statement : sig
 
   module ExportDefaultDeclaration : sig
     type ('M, 'T) t = {
-      default: 'M;
+      default: 'T;
       declaration: ('M, 'T) declaration;
       comments: ('M, unit) Syntax.t option;
     }
@@ -1271,6 +1276,7 @@ and Statement : sig
     | DeclareInterface of ('M, 'T) Interface.t
     | DeclareModule of ('M, 'T) DeclareModule.t
     | DeclareModuleExports of ('M, 'T) DeclareModuleExports.t
+    | DeclareNamespace of ('M, 'T) DeclareNamespace.t
     | DeclareTypeAlias of ('M, 'T) TypeAlias.t
     | DeclareOpaqueType of ('M, 'T) OpaqueType.t
     | DeclareVariable of ('M, 'T) DeclareVariable.t
@@ -1660,15 +1666,18 @@ and Expression : sig
     [@@deriving show]
   end
 
-  module TSTypeCast : sig
-    type ('M, 'T) kind =
-      | AsConst
-      | Satisfies of ('M, 'T) Type.t
-    [@@deriving show]
-
+  module AsConstExpression : sig
     type ('M, 'T) t = {
       expression: ('M, 'T) Expression.t;
-      kind: ('M, 'T) kind;
+      comments: ('M, unit) Syntax.t option;
+    }
+    [@@deriving show]
+  end
+
+  module TSSatisfies : sig
+    type ('M, 'T) t = {
+      expression: ('M, 'T) Expression.t;
+      annot: ('M, 'T) Type.annotation;
       comments: ('M, unit) Syntax.t option;
     }
     [@@deriving show]
@@ -1704,6 +1713,7 @@ and Expression : sig
   and ('M, 'T) t' =
     | Array of ('M, 'T) Array.t
     | ArrowFunction of ('M, 'T) Function.t
+    | AsConstExpression of ('M, 'T) AsConstExpression.t
     | AsExpression of ('M, 'T) AsExpression.t
     | Assignment of ('M, 'T) Assignment.t
     | Binary of ('M, 'T) Binary.t
@@ -1735,7 +1745,7 @@ and Expression : sig
     | TemplateLiteral of ('M, 'T) TemplateLiteral.t
     | This of 'M This.t
     | TypeCast of ('M, 'T) TypeCast.t
-    | TSTypeCast of ('M, 'T) TSTypeCast.t
+    | TSSatisfies of ('M, 'T) TSSatisfies.t
     | Unary of ('M, 'T) Unary.t
     | Update of ('M, 'T) Update.t
     | Yield of ('M, 'T) Yield.t
@@ -2173,6 +2183,7 @@ and Function : sig
     body: ('M, 'T) body;
     async: bool;
     generator: bool;
+    hook: bool;
     predicate: ('M, 'T) Type.Predicate.t option;
     return: ('M, 'T) ReturnAnnot.t;
     tparams: ('M, 'T) Type.TypeParams.t option;

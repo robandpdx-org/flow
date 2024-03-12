@@ -15,12 +15,13 @@ react_component.js:13:29,13:37
 react_component.js:18:17 = State
 react_component.js:18:14,18:18
 react_component.js:31:7 = {
+  "documentation":"`<Fragment>`, often used via `<>...</>` syntax,\nlets you group elements without a wrapper node.\n\n**@see** https://react.dev/reference/react/Fragment",
   "types":{
     "unevaluated":{
       "expanded":{
         "kind":"NominalComponentDecl",
         "name":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:319:18,321:20"},
+          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:708:5,710:22"},
           "name":"Fragment"
         },
         "typeParams":[
@@ -35,53 +36,14 @@ react_component.js:31:7 = {
               "generic_kind":"type alias"
             },
             "polarity":"Neutral",
-            "default":{
-              "kind":"Generic",
-              "type":{
-                "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:15:14-23"},
-                "name":"React$Node"
-              },
-              "generic_kind":"type alias"
-            }
+            "default":{"kind":"Void"}
           }
         ],
         "isType":false
       },
-      "type":"component Fragment<Renders: React$Node = React$Node>"
+      "type":"component Fragment<Renders: React$Node = void>"
     },
-    "evaluated":{
-      "expanded":{
-        "kind":"NominalComponentDecl",
-        "name":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:319:18,321:20"},
-          "name":"Fragment"
-        },
-        "typeParams":[
-          {
-            "name":"Renders",
-            "bound":{
-              "kind":"Generic",
-              "type":{
-                "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:15:14-23"},
-                "name":"React$Node"
-              },
-              "generic_kind":"type alias"
-            },
-            "polarity":"Neutral",
-            "default":{
-              "kind":"Generic",
-              "type":{
-                "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:15:14-23"},
-                "name":"React$Node"
-              },
-              "generic_kind":"type alias"
-            }
-          }
-        ],
-        "isType":false
-      },
-      "type":"component Fragment<Renders: React$Node = React$Node>"
-    }
+    "evaluated":null
   },
   "reasons":[],
   "loc":{
@@ -103,25 +65,14 @@ react_component.js:32:13 = {
         "kind":"Generic",
         "typeArgs":[{"kind":"Num"}],
         "type":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:296:23-35"},
+          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:318:23-35"},
           "name":"ComponentType"
         },
         "generic_kind":"type alias"
       },
       "type":"ComponentType<number>"
     },
-    "evaluated":{
-      "expanded":{
-        "kind":"Generic",
-        "typeArgs":[{"kind":"Num"}],
-        "type":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:296:23-35"},
-          "name":"ComponentType"
-        },
-        "generic_kind":"type alias"
-      },
-      "type":"ComponentType<number>"
-    }
+    "evaluated":null
   },
   "reasons":[],
   "loc":{
@@ -142,7 +93,7 @@ react_component.js:32:29 = {
       "expanded":{
         "kind":"TypeAlias",
         "name":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:296:23-35"},
+          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:318:23-35"},
           "name":"ComponentType"
         },
         "typeParams":[{"name":"P","bound":null,"polarity":"Negative"}],
@@ -158,26 +109,7 @@ react_component.js:32:29 = {
       },
       "type":"type ComponentType<-P> = React$ComponentType<P>"
     },
-    "evaluated":{
-      "expanded":{
-        "kind":"TypeAlias",
-        "name":{
-          "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:296:23-35"},
-          "name":"ComponentType"
-        },
-        "typeParams":[{"name":"P","bound":null,"polarity":"Negative"}],
-        "body":{
-          "kind":"Generic",
-          "typeArgs":[{"kind":"Bound","bound":"P"}],
-          "type":{
-            "provenance":{"kind":"Library (Remote)","loc":"[LIB] react.js:124:14-32"},
-            "name":"React$ComponentType"
-          },
-          "generic_kind":"type alias"
-        }
-      },
-      "type":"type ComponentType<-P> = React$ComponentType<P>"
-    }
+    "evaluated":null
   },
   "reasons":[],
   "loc":{
@@ -194,6 +126,10 @@ react_component.js:32:29 = {
 }
 react.js:4:7
 Flags:
+`createElement` lets you create a React element.
+It serves as an alternative to writing JSX.
+
+**@see** https://react.dev/reference/react/createElement
 React$CreateElement
 react.js:4:7,4:19
 

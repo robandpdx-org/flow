@@ -44,6 +44,8 @@ let replace_comments_of_statement ~comments =
       | OpaqueType x -> OpaqueType OpaqueType.{ x with comments }
       | InterfaceDeclaration x -> InterfaceDeclaration Interface.{ x with comments }
       | VariableDeclaration x -> VariableDeclaration VariableDeclaration.{ x with comments }
+      | ComponentDeclaration x ->
+        ComponentDeclaration Ast.Statement.ComponentDeclaration.{ x with comments }
       | ClassDeclaration x -> ClassDeclaration Ast.Class.{ x with comments }
       | FunctionDeclaration x -> FunctionDeclaration Ast.Function.{ x with comments }
       | EnumDeclaration x -> EnumDeclaration EnumDeclaration.{ x with comments }
@@ -55,7 +57,12 @@ let replace_comments_of_statement ~comments =
       | DeclareOpaqueType x -> DeclareOpaqueType OpaqueType.{ x with comments }
       | DeclareInterface x -> DeclareInterface Interface.{ x with comments }
       | DeclareEnum x -> DeclareEnum EnumDeclaration.{ x with comments }
-      | other -> other
+      | ( Block _ | Break _ | Continue _ | Debugger _ | DeclareExportDeclaration _ | DeclareModule _
+        | DeclareModuleExports _ | DeclareNamespace _ | DoWhile _ | Empty _
+        | ExportDefaultDeclaration _ | ExportNamedDeclaration _ | Expression _ | For _ | ForIn _
+        | ForOf _ | If _ | ImportDeclaration _ | Labeled _ | Return _ | Switch _ | Throw _ | Try _
+        | While _ | With _ ) as x ->
+        x
       )
 
 class jsdoc_documentation_searcher find =
@@ -309,29 +316,14 @@ let search_jsdoc def_loc ast =
   with
   | FoundJsdoc documentation -> Some documentation
 
-module Remove_types = struct
-  class type_remover ~(reader : Parsing_heaps.Reader.reader) =
-    object
-      inherit [ALoc.t, ALoc.t * Type.t, Loc.t, Loc.t] Flow_polymorphic_ast_mapper.mapper
-
-      method on_loc_annot x = Parsing_heaps.Reader.loc_of_aloc ~reader x
-
-      method on_type_annot (x, _) = Parsing_heaps.Reader.loc_of_aloc ~reader x
-    end
-
-  let f ~reader ~typed_ast = (new type_remover ~reader)#program typed_ast
-end
-
-let jsdoc_of_getdef_loc ?current_ast ~reader def_loc =
+let jsdoc_of_getdef_loc ~ast ~reader def_loc =
   let open Base.Option.Let_syntax in
   let%bind source = Loc.source def_loc in
   let current_ast_if_should_use =
-    let%bind ((current_file_loc, _) as typed_ast) = current_ast in
-    let%bind current_file_source =
-      Loc.source (Parsing_heaps.Reader.loc_of_aloc ~reader current_file_loc)
-    in
+    let (current_file_loc, _) = ast in
+    let%bind current_file_source = Loc.source current_file_loc in
     if source = current_file_source then
-      Some (Remove_types.f ~reader ~typed_ast)
+      Some ast
     else
       None
   in

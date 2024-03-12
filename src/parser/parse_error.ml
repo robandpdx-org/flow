@@ -9,7 +9,6 @@ type t =
   | AccessorDataProperty
   | AccessorGetSet
   | AdjacentJSXElements
-  | AmbiguousDeclareModuleKind
   | AmbiguousLetBracket
   | AsyncFunctionAsStatement
   | AwaitAsIdentifierReference
@@ -21,11 +20,8 @@ type t =
   | DeclareAsync
   | DeclareClassElement
   | DeclareClassFieldInitializer
-  | DeclareExportInterface
-  | DeclareExportType
   | DeclareOpaqueTypeInitializer
   | DuplicateConstructor
-  | DuplicateDeclareModuleExports
   | DuplicateExport of string
   | DuplicatePrivateFields of string
   | ElementAfterRestElement
@@ -99,7 +95,6 @@ type t =
   | InvalidLHSInExponentiation
   | InvalidLHSInForIn
   | InvalidLHSInForOf
-  | InvalidNonTypeImportInDeclareModule
   | InvalidOptionalIndexedAccess
   | InvalidRegExp
   | InvalidRegExpFlags of string
@@ -195,9 +190,6 @@ module PP = struct
     | AccessorGetSet -> "Object literal may not have multiple get/set accessors with the same name"
     | AdjacentJSXElements ->
       "Unexpected token <. Remember, adjacent JSX elements must be wrapped in an enclosing parent tag"
-    | AmbiguousDeclareModuleKind ->
-      "Found both `declare module.exports` and `declare export` in the same module. "
-      ^ "Modules can only have 1 since they are either an ES module xor they are a CommonJS module."
     | AmbiguousLetBracket ->
       "`let [` is ambiguous in this position because it is either a `let` binding pattern, or a member expression."
     | AsyncFunctionAsStatement ->
@@ -214,13 +206,9 @@ module PP = struct
     | DeclareClassElement -> "`declare` modifier can only appear on class fields."
     | DeclareClassFieldInitializer ->
       "Unexpected token `=`. Initializers are not allowed in a `declare`."
-    | DeclareExportInterface ->
-      "`declare export interface` is not supported. Use `export interface` instead."
-    | DeclareExportType -> "`declare export type` is not supported. Use `export type` instead."
     | DeclareOpaqueTypeInitializer ->
       "Unexpected token `=`. Initializers are not allowed in a `declare opaque type`."
     | DuplicateConstructor -> "Classes may only have one constructor"
-    | DuplicateDeclareModuleExports -> "Duplicate `declare module.exports` statement!"
     | DuplicateExport export -> Printf.sprintf "Duplicate export for `%s`" export
     | DuplicatePrivateFields name ->
       Printf.sprintf
@@ -391,8 +379,6 @@ module PP = struct
     | InvalidLHSInExponentiation -> "Invalid left-hand side in exponentiation expression"
     | InvalidLHSInForIn -> "Invalid left-hand side in for-in"
     | InvalidLHSInForOf -> "Invalid left-hand side in for-of"
-    | InvalidNonTypeImportInDeclareModule ->
-      "Imports within a `declare module` body must always be `import type` or `import typeof`!"
     | InvalidOptionalIndexedAccess ->
       "Invalid optional indexed access. Indexed access uses bracket notation. Use the format `T?.[K]`."
     | InvalidRegExp -> "Invalid regular expression"

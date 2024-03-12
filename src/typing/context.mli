@@ -75,13 +75,14 @@ type metadata = {
   babel_loose_array_spread: bool;
   casting_syntax: Options.CastingSyntax.t;
   component_syntax: bool;
-  component_syntax_includes: string list;
+  hooklike_functions_includes: string list;
+  hooklike_functions: bool;
   react_rules: Options.react_rules list;
   react_rules_always: bool;
+  enable_as_const: bool;
   enable_const_params: bool;
   enable_enums: bool;
   enable_relay_integration: bool;
-  enforce_strict_call_arity: bool;
   exact_by_default: bool;
   facebook_fbs: string option;
   facebook_fbt: string option;
@@ -92,18 +93,19 @@ type metadata = {
   max_trace_depth: int;
   max_workers: int;
   missing_module_generators: (Str.regexp * string) list;
+  namespaces: bool;
   react_runtime: Options.react_runtime;
   recursion_limit: int;
+  relay_integration_esmodules: bool;
   relay_integration_excludes: Str.regexp list;
   relay_integration_module_prefix: string option;
   relay_integration_module_prefix_includes: Str.regexp list;
-  renders_type_validation: bool;
-  renders_type_validation_includes: string list;
   root: File_path.t;
   strict_es6_import_export: bool;
   strict_es6_import_export_excludes: string list;
   strip_root: bool;
   suppress_types: SSet.t;
+  ts_syntax: bool;
   use_mixed_in_catch_variables: bool;
 }
 
@@ -158,9 +160,13 @@ val casting_syntax : t -> Options.CastingSyntax.t
 
 val component_syntax : t -> bool
 
+val hooklike_functions : t -> bool
+
 val react_rule_enabled : t -> Options.react_rules -> bool
 
 val react_rules_always : t -> bool
+
+val enable_as_const : t -> bool
 
 val enable_const_params : t -> bool
 
@@ -168,9 +174,9 @@ val enable_enums : t -> bool
 
 val enable_relay_integration : t -> bool
 
-val relay_integration_module_prefix : t -> string option
+val relay_integration_esmodules : t -> bool
 
-val enforce_strict_call_arity : t -> bool
+val relay_integration_module_prefix : t -> string option
 
 val errors : t -> Flow_error.ErrorSet.t
 
@@ -220,8 +226,6 @@ val severity_cover : t -> ExactCover.lint_severity_cover Utils_js.FilenameMap.t
 
 val max_trace_depth : t -> int
 
-val module_kind : t -> Module_info.kind
-
 val property_maps : t -> Type.Properties.map
 
 val call_props : t -> Type.t IMap.t
@@ -248,18 +252,25 @@ val should_strip_root : t -> bool
 
 val suppress_types : t -> SSet.t
 
+val ts_syntax : t -> bool
+
 val type_graph : t -> Graph_explorer.graph
 
 val matching_props : t -> (string * ALoc.t * ALoc.t) list
 
 val literal_subtypes : t -> (ALoc.t * Env_api.literal_check) list
 
-val constrained_writes : t -> (Type.t * Type.use_op * Type.t) list
+val post_inference_polarity_checks :
+  t -> (Type.typeparam Subst_name.Map.t * Polarity.t * Type.t) list
+
+val post_inference_validation_flows : t -> (Type.t * Type.use_t) list
 
 val renders_type_argument_validations :
   t -> (ALoc.t * Flow_ast.Type.Renders.variant * bool * Type.t) list
 
 val missing_local_annot_lower_bounds : t -> Type.t Nel.t ALocFuzzyMap.t
+
+val namespaces : t -> bool
 
 val verbose : t -> Verbose.t option
 
@@ -277,6 +288,8 @@ val exists_excuses : t -> ExistsCheck.t ALocMap.t
 
 val voidable_checks : t -> voidable_check list
 
+val reachable_deps : t -> Utils_js.FilenameSet.t
+
 val environment : t -> Loc_env.t
 
 val typing_mode : t -> typing_mode
@@ -292,13 +305,9 @@ val any_propagation : t -> bool
 val automatic_require_default : t -> bool
 
 (* modules *)
-val push_declare_module : t -> Module_info.t -> unit
-
-val pop_declare_module : t -> unit
-
 val in_declare_module : t -> bool
 
-val module_info : t -> Module_info.t
+val in_declare_namespace : t -> bool
 
 (* mutators *)
 val add_exhaustive_check : t -> ALoc.t -> ALoc.t list * bool -> unit
@@ -325,7 +334,12 @@ val add_matching_props : t -> string * ALoc.t * ALoc.t -> unit
 
 val add_literal_subtypes : t -> ALoc.t * Env_api.literal_check -> unit
 
-val add_constrained_write : t -> Type.t * Type.use_op * Type.t -> unit
+val add_post_inference_polarity_check :
+  t -> Type.typeparam Subst_name.Map.t -> Polarity.t -> Type.t -> unit
+
+val add_post_inference_validation_flow : t -> Type.t -> Type.use_t -> unit
+
+val add_post_inference_subtyping_check : t -> Type.t -> Type.use_op -> Type.t -> unit
 
 val add_renders_type_argument_validation :
   t -> allow_generic_t:bool -> ALoc.t -> Flow_ast.Type.Renders.variant -> Type.t -> unit
@@ -335,6 +349,8 @@ val add_missing_local_annot_lower_bound : t -> ALoc.t -> Type.t -> unit
 val add_voidable_check : t -> voidable_check -> unit
 
 val add_monomorphized_component : t -> Type.Properties.id -> Type.t -> unit
+
+val add_reachable_dep : t -> File_key.t -> unit
 
 val set_evaluated : t -> Type.t Type.Eval.Map.t -> unit
 
@@ -364,14 +380,13 @@ val set_environment : t -> Loc_env.t -> unit
 
 val set_signature_help_callee : t -> ALoc.t -> Type.t -> unit
 
+val set_union_opt : t -> ALoc.t -> Type.t -> unit
+
 val run_and_rolled_back_cache : t -> (unit -> 'a) -> 'a
 
 val run_in_synthesis_mode : t -> (unit -> 'a) -> bool * 'a
 
 val run_in_hint_eval_mode : t -> (unit -> 'a) -> 'a
-
-val add_global_value_cache_entry :
-  t -> Reason.name -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result -> unit
 
 val add_env_cache_entry :
   t -> for_value:bool -> int -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result -> unit
@@ -432,12 +447,6 @@ val has_prop : t -> Type.Properties.id -> Reason.name -> bool
 
 val get_prop : t -> Type.Properties.id -> Reason.name -> Type.Property.t option
 
-val set_prop : t -> Type.Properties.id -> Reason.name -> Type.Property.t -> unit
-
-val has_export : t -> Type.Exports.id -> Reason.name -> bool
-
-val set_export : t -> Type.Exports.id -> Reason.name -> Type.named_symbol -> unit
-
 (* constructors *)
 val make_aloc_id : t -> ALoc.t -> ALoc.id
 
@@ -445,13 +454,14 @@ val make_generic_id : t -> Subst_name.t -> ALoc.t -> Generic.id
 
 val generate_property_map : t -> Type.Properties.t -> Type.Properties.id
 
-val make_source_property_map : t -> Type.Properties.t -> ALoc.t -> Type.Properties.id
+val make_source_property_map :
+  t -> Type.Properties.t -> type_sig:bool -> ALoc.t -> Type.Properties.id
 
 val make_call_prop : t -> Type.t -> int
 
 val make_export_map : t -> Type.Exports.t -> Type.Exports.id
 
-val make_source_poly_id : t -> ALoc.t -> Type.Poly.id
+val make_source_poly_id : t -> type_sig:bool -> ALoc.t -> Type.Poly.id
 
 val find_constraints : t -> Type.ident -> Type.ident * Type.Constraint.constraints
 
@@ -462,9 +472,6 @@ val find_root : t -> Type.ident -> Type.ident * Type.Constraint.node * Type.Cons
 val find_root_id : t -> Type.ident -> Type.ident
 
 val find_resolved : t -> Type.t -> Type.t option
-
-val global_value_cache_find_opt :
-  t -> Reason.name -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result option
 
 val env_cache_find_opt :
   t -> for_value:bool -> int -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result option
@@ -513,6 +520,8 @@ val find_avar_opt : t -> int -> Type.AConstraint.t option
 val find_monomorphized_component : t -> Type.Properties.id -> Type.t option
 
 val get_signature_help_callee : t -> ALoc.t -> Type.t option
+
+val iter_union_opt : t -> f:(ALocMap.key -> Type.t -> unit) -> unit
 
 val remove_avar : t -> int -> unit
 

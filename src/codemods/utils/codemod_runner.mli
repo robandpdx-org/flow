@@ -7,6 +7,8 @@
 
 [@@@warning "-67"]
 
+open Utils_js
+
 type 'a unit_result = ('a, ALoc.t * Error_message.internal_error) result
 
 type ('a, 'ctx) abstract_visitor =
@@ -20,6 +22,8 @@ module type SIMPLE_TYPED_RUNNER_CONFIG = sig
   type accumulator
 
   val reporter : accumulator Codemod_report.t
+
+  val expand_roots : env:ServerEnv.env -> FilenameSet.t -> FilenameSet.t
 
   val check_options : Options.t -> Options.t
 
@@ -53,6 +57,8 @@ module type TYPED_RUNNER_WITH_PREPASS_CONFIG = sig
 
   val reporter : accumulator Codemod_report.t
 
+  val expand_roots : env:ServerEnv.env -> FilenameSet.t -> FilenameSet.t
+
   val prepass_init : unit -> prepass_state
 
   val mod_prepass_options : Options.t -> Options.t
@@ -81,6 +87,8 @@ module type RUNNABLE = sig
 end
 
 module MakeSimpleTypedRunner (C : SIMPLE_TYPED_RUNNER_CONFIG) : RUNNABLE
+
+module MakeSimpleTypedTwoPassRunner (C : SIMPLE_TYPED_RUNNER_CONFIG) : RUNNABLE
 
 module MakeUntypedFlowInitRunner (C : UNTYPED_FLOW_INIT_RUNNER_CONFIG) : RUNNABLE
 

@@ -140,7 +140,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
           let (marked, _) = self#type_ cx pole (marked, tparam_names') t in
           (* TODO(jmbrown): Handle defaults on type parameters *)
           (marked, tparam_names)
-        | TypeAppT { reason = _; use_op = _; type_; targs; use_desc = _ } ->
+        | TypeAppT { reason = _; use_op = _; type_; targs; from_value = _; use_desc = _ } ->
           self#typeapp targs cx pole acc type_
         (* ThisTypeAppT is created from a new expression, which cannot
          * be used as an annotation, so we do not special case it like
@@ -217,7 +217,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
       | ReactElementConfigType ->
         merge_lower_or_upper_bounds r (OpenT tout)
         |> bind_use_t_result ~f:(fun config ->
-               let react_node = Flow.get_builtin_type cx r (OrdinaryName "React$Node") in
+               let react_node = Flow.get_builtin_type cx r "React$Node" in
                UpperT
                  (DefT
                     ( r,
@@ -243,6 +243,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
         |> bind_use_t_result ~f:(fun t -> UpperT (MaybeT (r, t)))
       | ReadOnlyType
       | ReactDRO _
+      | MakeHooklike
       | PartialType
       | RequiredType
       | ReactConfigType _ ->
@@ -282,6 +283,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
     | GetElemT _
     | SetElemT _
     | CallElemT _
+    | GetTypeFromNamespaceT _
     | GetPropT _
     | GetPrivatePropT _
     | TestPropT _
@@ -298,8 +300,6 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
     | GetValuesT _
     | GetDictValuesT _
     (* Import-export related upper bounds won't appear during implicit instantiation. *)
-    | CJSRequireT _
-    | ImportModuleNsT _
     | AssertImportIsValueT _
     | AssertNonComponentLikeT _
     | CJSExtractNamedExportsT _
@@ -348,6 +348,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
     | WriteComputedObjPropCheckT _
     | PromoteRendersRepresentationT _
     | ConvertEmptyPropsToMixedT _
+    | ValueToTypeReferenceT _
     | TryRenderTypePromotionT _
     | ExitRendersT _
     (* When we have ChoiceKitUseT, we are already stuck. *)
@@ -358,7 +359,6 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
     | VarianceCheckT _
     | ConcretizeTypeAppsT _
     | ObjRestT _
-    | BecomeT _
     | ElemT _
     | ReactKitT _
     | PreprocessKitT _
@@ -371,6 +371,7 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
       UpperNonT u
     | DeepReadOnlyT (((r, _) as tout), _, _) ->
       identity_reverse_upper_bound cx seen tvar r (OpenT tout)
+    | HooklikeT ((r, _) as tout) -> identity_reverse_upper_bound cx seen tvar r (OpenT tout)
     | MakeExactT (_, Lower (_, t)) -> UpperT t
     | MakeExactT (_, Upper use_t) -> t_of_use_t cx seen tvar use_t
     | ReposLowerT (_, _, use_t) -> t_of_use_t cx seen tvar use_t
@@ -810,7 +811,14 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
         let (_, inferred_targ_list) = merge_targs None in
         let targs = Base.List.map ~f:(fun (_, t, _, _) -> t) inferred_targ_list in
         ( inferred_targ_list,
-          Flow.mk_typeapp_instance_annot cx ~use_op ~reason_op ~reason_tapp lhs targs,
+          Flow.mk_typeapp_instance_annot
+            cx
+            ~use_op
+            ~reason_op
+            ~reason_tapp
+            ~from_value:false
+            lhs
+            targs,
           UseT (use_op, u),
           None
         )
@@ -1032,13 +1040,13 @@ module Make (Observer : OBSERVER) (Flow : Flow_common.S) : S = struct
         check_react_fun cx ~tparams ~tparams_map ~props ~implicit_instantiation
       | (DefT (_, FunT (_, funtype)), _) ->
         check_fun cx ~tparams ~tparams_map ~return_t:funtype.return_t ~implicit_instantiation
-      | (ThisClassT (_, DefT (_, InstanceT _), _, _), Check.Call _) ->
+      | (DefT (_, ClassT (ThisInstanceT _)), Check.Call _) ->
         (* This case is hit when calling a static function. We will implicitly
          * instantiate the type variables on the class, but using an instance's
          * type params in a static method does not make sense. We ignore this case
          * intentionally *)
         ([], Marked.empty, None)
-      | (ThisClassT (_, DefT (_, InstanceT _), _, _), _) ->
+      | (DefT (_, ClassT (ThisInstanceT _)), _) ->
         check_instance cx ~tparams ~implicit_instantiation
       | _ ->
         (* There are no other valid cases of implicit instantiation, but it is still possible
@@ -1489,7 +1497,7 @@ module Kit (FlowJs : Flow_common.S) (Instantiation_helper : Flow_js_utils.Instan
       f ()
 
   let run_ref_extractor cx ~use_op ~reason t =
-    let lhs = Flow.get_builtin cx (OrdinaryName "React$RefSetter") reason in
+    let lhs = Flow_js_utils.lookup_builtin_type cx "React$RefSetter" reason in
     match get_t cx lhs with
     | DefT (_, PolyT { tparams_loc; tparams = ({ name; _ }, []) as ids; t_out; _ }) ->
       let poly_t = (tparams_loc, ids, t_out) in
@@ -1631,11 +1639,14 @@ module Kit (FlowJs : Flow_common.S) (Instantiation_helper : Flow_js_utils.Instan
               (* A conditional type with GenericTs in check type and extends type is tricky.
                  We cannot conservatively decide which branch we will take. To maintain
                  soundness in this general case, we make the type abstract. *)
-              let name = Subst_name.Synthetic ("conditional type", []) in
+              let name =
+                Subst_name.Synthetic
+                  { name = "conditional type"; op_kind = Some Subst_name.Conditional; ts = [] }
+              in
               let id = Context.make_generic_id cx name (loc_of_reason reason) in
               let reason = update_desc_reason invalidate_rtype_alias reason in
               let bound = UnionT (reason, UnionRep.make true_t false_t []) in
-              GenericT { reason; name; id; bound })
+              GenericT { reason; name; id; bound; no_infer = false })
       in
       reposition cx ~trace (loc_of_reason reason) t
 end

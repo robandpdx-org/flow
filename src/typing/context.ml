@@ -38,13 +38,14 @@ type metadata = {
   babel_loose_array_spread: bool;
   casting_syntax: Options.CastingSyntax.t;
   component_syntax: bool;
-  component_syntax_includes: string list;
+  hooklike_functions_includes: string list;
+  hooklike_functions: bool;
   react_rules: Options.react_rules list;
   react_rules_always: bool;
+  enable_as_const: bool;
   enable_const_params: bool;
   enable_enums: bool;
   enable_relay_integration: bool;
-  enforce_strict_call_arity: bool;
   exact_by_default: bool;
   facebook_fbs: string option;
   facebook_fbt: string option;
@@ -55,18 +56,19 @@ type metadata = {
   max_trace_depth: int;
   max_workers: int;
   missing_module_generators: (Str.regexp * string) list;
+  namespaces: bool;
   react_runtime: Options.react_runtime;
   recursion_limit: int;
+  relay_integration_esmodules: bool;
   relay_integration_excludes: Str.regexp list;
   relay_integration_module_prefix: string option;
   relay_integration_module_prefix_includes: Str.regexp list;
-  renders_type_validation: bool;
-  renders_type_validation_includes: string list;
   root: File_path.t;
   strict_es6_import_export: bool;
   strict_es6_import_export_excludes: string list;
   strip_root: bool;
   suppress_types: SSet.t;
+  ts_syntax: bool;
   use_mixed_in_catch_variables: bool;
 }
 
@@ -172,11 +174,11 @@ type component_t = {
   (* Post-inference checks *)
   mutable literal_subtypes: (ALoc.t * Env_api.literal_check) list;
   mutable matching_props: (string * ALoc.t * ALoc.t) list;
-  mutable constrained_writes: (Type.t * Type.use_op * Type.t) list;
+  mutable post_inference_polarity_checks:
+    (Type.typeparam Subst_name.Map.t * Polarity.t * Type.t) list;
+  mutable post_inference_validation_flows: (Type.t * Type.use_t) list;
   mutable renders_type_argument_validations:
     (ALoc.t * Flow_ast.Type.Renders.variant * bool * Type.t) list;
-  mutable global_value_cache:
-    (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result NameUtils.Map.t;
   mutable env_value_cache: (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result IMap.t;
   mutable env_type_cache: (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result IMap.t;
   (* map from annot tvar ids to nodes used during annotation processing *)
@@ -198,6 +200,8 @@ type component_t = {
   mutable monomorphized_components: Type.t Type.Properties.Map.t;
   (* Signature help *)
   mutable signature_help_callee: Type.t ALocMap.t;
+  (* Union optimization checks *)
+  mutable union_opt: Type.t ALocMap.t;
 }
 [@@warning "-69"]
 
@@ -214,7 +218,6 @@ type t = {
   aloc_table: ALoc.table Lazy.t;
   metadata: metadata;
   resolve_require: resolve_require;
-  module_info: Module_info.t;
   hint_map_arglist_cache: (ALoc.t * Type.call_arg) list ALocMap.t ref;
   hint_map_jsx_cache:
     ( Reason.t * string * ALoc.t list * ALoc.t,
@@ -222,9 +225,11 @@ type t = {
     )
     Hashtbl.t;
   mutable hint_eval_cache: Type.t option IMap.t;
-  mutable declare_module_ref: Module_info.t option;
   mutable environment: Loc_env.t;
   mutable typing_mode: typing_mode;
+  (* A subset of all transitive dependencies of the current file as determined by import/require.
+   * This set will only be populated with type sig files that are actually forced. *)
+  mutable reachable_deps: Utils_js.FilenameSet.t;
   node_cache: Node_cache.t;
 }
 
@@ -248,14 +253,15 @@ let metadata_of_options options =
     automatic_require_default = Options.automatic_require_default options;
     babel_loose_array_spread = Options.babel_loose_array_spread options;
     casting_syntax = Options.casting_syntax options;
-    component_syntax = Options.typecheck_component_syntax options;
-    component_syntax_includes = Options.component_syntax_includes options;
+    component_syntax = Options.component_syntax options;
+    hooklike_functions_includes = Options.hooklike_functions_includes options;
+    hooklike_functions = Options.hooklike_functions options;
     react_rules = Options.react_rules options;
     react_rules_always = false;
+    enable_as_const = Options.as_const options;
     enable_const_params = Options.enable_const_params options;
     enable_enums = Options.enums options;
     enable_relay_integration = Options.enable_relay_integration options;
-    enforce_strict_call_arity = Options.enforce_strict_call_arity options;
     exact_by_default = Options.exact_by_default options;
     facebook_fbs = Options.facebook_fbs options;
     facebook_fbt = Options.facebook_fbt options;
@@ -266,19 +272,20 @@ let metadata_of_options options =
     max_trace_depth = Options.max_trace_depth options;
     max_workers = Options.max_workers options;
     missing_module_generators = Options.missing_module_generators options;
+    namespaces = Options.namespaces options;
     react_runtime = Options.react_runtime options;
     recursion_limit = Options.recursion_limit options;
+    relay_integration_esmodules = Options.relay_integration_esmodules options;
     relay_integration_excludes = Options.relay_integration_excludes options;
     relay_integration_module_prefix = Options.relay_integration_module_prefix options;
     relay_integration_module_prefix_includes =
       Options.relay_integration_module_prefix_includes options;
-    renders_type_validation = Options.renders_type_validation options;
-    renders_type_validation_includes = Options.renders_type_validation_includes options;
     root = Options.root options;
     strict_es6_import_export = Options.strict_es6_import_export options;
     strict_es6_import_export_excludes = Options.strict_es6_import_export_excludes options;
     strip_root = Options.should_strip_root options;
     suppress_types = Options.suppress_types options;
+    ts_syntax = Options.ts_syntax options;
     use_mixed_in_catch_variables = Options.use_mixed_in_catch_variables options;
   }
 
@@ -358,9 +365,9 @@ let make_ccx () =
     synthesis_produced_placeholders = false;
     matching_props = [];
     literal_subtypes = [];
-    constrained_writes = [];
+    post_inference_polarity_checks = [];
+    post_inference_validation_flows = [];
     renders_type_argument_validations = [];
-    global_value_cache = NameUtils.Map.empty;
     env_value_cache = IMap.empty;
     env_type_cache = IMap.empty;
     missing_local_annot_lower_bounds = ALocFuzzyMap.empty;
@@ -390,6 +397,7 @@ let make_ccx () =
     allow_method_unbinding = ALocSet.empty;
     monomorphized_components = Type.Properties.Map.empty;
     signature_help_callee = ALocMap.empty;
+    union_opt = ALocMap.empty;
   }
 
 let make ccx metadata file aloc_table resolve_require mk_builtins =
@@ -401,13 +409,12 @@ let make ccx metadata file aloc_table resolve_require mk_builtins =
       aloc_table;
       metadata;
       resolve_require;
-      module_info = Module_info.empty_cjs_module ();
       hint_map_arglist_cache = ref ALocMap.empty;
       hint_map_jsx_cache = Hashtbl.create 0;
       hint_eval_cache = IMap.empty;
-      declare_module_ref = None;
       environment = Loc_env.empty Name_def.Global;
       typing_mode = CheckingMode;
+      reachable_deps = Utils_js.FilenameSet.empty;
       node_cache = Node_cache.mk_empty ();
     }
   in
@@ -418,26 +425,9 @@ let sig_cx cx = cx.ccx.sig_cx
 
 (* modules *)
 
-let push_declare_module cx info =
-  match cx.declare_module_ref with
-  | Some _ -> failwith "declare module must be one level deep"
-  | None -> cx.declare_module_ref <- Some info
+let in_declare_module cx = cx.environment.Loc_env.scope_kind = Name_def.DeclareModule
 
-let pop_declare_module cx =
-  match cx.declare_module_ref with
-  | None -> failwith "pop empty declare module"
-  | Some _ -> cx.declare_module_ref <- None
-
-let in_declare_module cx = cx.declare_module_ref <> None
-
-let module_info cx =
-  match cx.declare_module_ref with
-  | Some info -> info
-  | None -> cx.module_info
-
-let module_kind cx =
-  let info = module_info cx in
-  info.Module_info.kind
+let in_declare_namespace cx = cx.environment.Loc_env.scope_kind = Name_def.DeclareNamespace
 
 (* accessors *)
 
@@ -463,14 +453,16 @@ let in_dirlist cx dirs =
 
 let casting_syntax cx = cx.metadata.casting_syntax
 
-let component_syntax cx =
-  cx.metadata.component_syntax
-  || in_dirlist cx cx.metadata.component_syntax_includes
-  || File_key.is_lib_file cx.file
+let component_syntax cx = cx.metadata.component_syntax || File_key.is_lib_file cx.file
+
+let hooklike_functions cx =
+  cx.metadata.hooklike_functions || in_dirlist cx cx.metadata.hooklike_functions_includes
 
 let react_rules_always cx = cx.metadata.react_rules_always
 
 let react_rule_enabled cx rule = List.mem rule cx.metadata.react_rules
+
+let enable_as_const cx = cx.metadata.enable_as_const
 
 let enable_const_params cx =
   cx.metadata.enable_const_params || cx.metadata.strict || cx.metadata.strict_local
@@ -481,16 +473,13 @@ let enable_relay_integration cx =
   cx.metadata.enable_relay_integration
   && Relay_options.enabled_for_file cx.metadata.relay_integration_excludes (file cx)
 
+let relay_integration_esmodules cx = cx.metadata.relay_integration_esmodules
+
 let relay_integration_module_prefix cx =
   Relay_options.module_prefix_for_file
     cx.metadata.relay_integration_module_prefix_includes
     (file cx)
     cx.metadata.relay_integration_module_prefix
-
-let enable_renders_type_validation cx =
-  cx.metadata.renders_type_validation || in_dirlist cx cx.metadata.renders_type_validation_includes
-
-let enforce_strict_call_arity cx = cx.metadata.enforce_strict_call_arity
 
 let errors cx = cx.ccx.errors
 
@@ -542,7 +531,7 @@ let is_verbose cx =
     else
       Base.List.mem files (File_key.to_string file) ~equal:String.equal
 
-let is_strict cx = Base.Option.is_some cx.declare_module_ref || cx.metadata.strict
+let is_strict cx = in_declare_module cx || cx.metadata.strict
 
 let is_strict_local cx = cx.metadata.strict_local
 
@@ -582,13 +571,15 @@ let should_strip_root cx = cx.metadata.strip_root
 
 let suppress_types cx = cx.metadata.suppress_types
 
+let ts_syntax cx = cx.metadata.ts_syntax
+
 let literal_subtypes cx = cx.ccx.literal_subtypes
 
-let constrained_writes cx = cx.ccx.constrained_writes
+let post_inference_polarity_checks cx = cx.ccx.post_inference_polarity_checks
+
+let post_inference_validation_flows cx = cx.ccx.post_inference_validation_flows
 
 let renders_type_argument_validations cx = cx.ccx.renders_type_argument_validations
-
-let global_value_cache_find_opt cx name = NameUtils.Map.find_opt name cx.ccx.global_value_cache
 
 let env_cache_find_opt cx ~for_value id =
   let cache =
@@ -615,6 +606,8 @@ let max_workers cx = cx.metadata.max_workers
 
 let missing_module_generators cx = cx.metadata.missing_module_generators
 
+let namespaces cx = cx.metadata.namespaces
+
 let jsx cx = cx.metadata.jsx
 
 let exists_checks cx = cx.ccx.exists_checks
@@ -622,6 +615,8 @@ let exists_checks cx = cx.ccx.exists_checks
 let exists_excuses cx = cx.ccx.exists_excuses
 
 let voidable_checks cx = cx.ccx.voidable_checks
+
+let reachable_deps cx = cx.reachable_deps
 
 let environment cx = cx.environment
 
@@ -690,15 +685,19 @@ let add_matching_props cx c = cx.ccx.matching_props <- c :: cx.ccx.matching_prop
 
 let add_literal_subtypes cx c = cx.ccx.literal_subtypes <- c :: cx.ccx.literal_subtypes
 
-let add_constrained_write cx c = cx.ccx.constrained_writes <- c :: cx.ccx.constrained_writes
+let add_post_inference_polarity_check cx tparams polarity t =
+  cx.ccx.post_inference_polarity_checks <-
+    (tparams, polarity, t) :: cx.ccx.post_inference_polarity_checks
+
+let add_post_inference_validation_flow cx t use_t =
+  cx.ccx.post_inference_validation_flows <- (t, use_t) :: cx.ccx.post_inference_validation_flows
+
+let add_post_inference_subtyping_check cx l use_op u =
+  add_post_inference_validation_flow cx l (Type.UseT (use_op, u))
 
 let add_renders_type_argument_validation cx ~allow_generic_t loc variant t =
-  if enable_renders_type_validation cx then
-    cx.ccx.renders_type_argument_validations <-
-      (loc, variant, allow_generic_t, t) :: cx.ccx.renders_type_argument_validations
-
-let add_global_value_cache_entry cx name t =
-  cx.ccx.global_value_cache <- NameUtils.Map.add name t cx.ccx.global_value_cache
+  cx.ccx.renders_type_argument_validations <-
+    (loc, variant, allow_generic_t, t) :: cx.ccx.renders_type_argument_validations
 
 let add_env_cache_entry cx ~for_value id t =
   if for_value then
@@ -711,6 +710,9 @@ let add_voidable_check cx voidable_check =
 
 let add_monomorphized_component cx id t =
   cx.ccx.monomorphized_components <- Type.Properties.Map.add id t cx.ccx.monomorphized_components
+
+let add_reachable_dep cx file_key =
+  cx.reachable_deps <- Utils_js.FilenameSet.add file_key cx.reachable_deps
 
 let add_missing_local_annot_lower_bound cx loc t =
   let missing_local_annot_lower_bounds = cx.ccx.missing_local_annot_lower_bounds in
@@ -749,6 +751,10 @@ let set_signature_help_callee cx loc t =
   cx.ccx.signature_help_callee <- ALocMap.add loc t cx.ccx.signature_help_callee
 
 let get_signature_help_callee cx loc = ALocMap.find_opt loc cx.ccx.signature_help_callee
+
+let set_union_opt cx loc t = cx.ccx.union_opt <- ALocMap.add loc t cx.ccx.union_opt
+
+let iter_union_opt cx ~f = ALocMap.iter f cx.ccx.union_opt
 
 let add_exists_check cx loc t =
   let tset =
@@ -938,12 +944,6 @@ let has_prop cx id x = find_props cx id |> NameUtils.Map.mem x
 
 let get_prop cx id x = find_props cx id |> NameUtils.Map.find_opt x
 
-let set_prop cx id x p = find_props cx id |> NameUtils.Map.add x p |> add_property_map cx id
-
-let has_export cx id name = find_exports cx id |> NameUtils.Map.mem name
-
-let set_export cx id name t = find_exports cx id |> NameUtils.Map.add name t |> add_export_map cx id
-
 (* constructors *)
 let make_aloc_id cx aloc = ALoc.id_of_aloc cx.aloc_table aloc
 
@@ -954,12 +954,12 @@ let generate_property_map cx pmap =
   add_property_map cx id pmap;
   id
 
-let make_source_property_map cx pmap aloc =
+let make_source_property_map cx pmap ~type_sig aloc =
   (* To prevent cases where we might compare a concrete and an abstract
      aloc (like in a cycle) we abstractify all incoming alocs before adding
      them to the map. The only exception is for library files, which have only
      concrete definitions and by definition cannot appear in cycles. *)
-  let id = make_aloc_id cx aloc |> Type.Properties.id_of_aloc_id in
+  let id = make_aloc_id cx aloc |> Type.Properties.id_of_aloc_id ~type_sig in
   add_property_map cx id pmap;
   id
 
@@ -973,7 +973,8 @@ let make_export_map cx tmap =
   add_export_map cx id tmap;
   id
 
-let make_source_poly_id cx aloc = make_aloc_id cx aloc |> Type.Poly.id_of_aloc_id
+let make_source_poly_id cx ~type_sig aloc =
+  make_aloc_id cx aloc |> Type.Poly.id_of_aloc_id ~type_sig
 
 let find_graph cx id = Type.Constraint.find_graph cx.ccx.sig_cx.graph id
 

@@ -159,6 +159,7 @@ module Eval = struct
     | Interface _
     | FunBinding _
     | DeclareFun _
+    | NamespaceBinding _
     | OpaqueType _ ->
       (* None of these contain anything that can be imported separately. For example,
          you can't `import {someMethod} ...` from an exported class. *)
@@ -212,7 +213,7 @@ module Eval = struct
     | Value
         ( ( ClassExpr _ | FunExpr _ | StringVal _ | StringLit _ | LongStringLit _ | NumberVal _
           | NumberLit _ | BooleanVal _ | BooleanLit _ | NullLit _ | ArrayLit _ | BigIntVal _
-          | BigIntLit _ ),
+          | BigIntLit _ | AsConst _ ),
           _
         ) ->
       Nothing
@@ -317,7 +318,7 @@ module CJS = struct
   open Type_sig_pack
 
   (** only objects can be destructured on import *)
-  let exports_of_value acc type_sig = function
+  let rec exports_of_value acc type_sig = function
     | ObjLit { props; _ }
     | DeclareModuleImplicitlyExportedObject { props; _ } ->
       SMap.fold
@@ -340,6 +341,7 @@ module CJS = struct
             acc)
         props
         acc
+    | AsConst v -> exports_of_value acc type_sig v
     | ArrayLit _
     | BooleanLit _
     | BooleanVal _
@@ -414,7 +416,8 @@ let add_global =
     | Type_sig.FunBinding _
     | Type_sig.DeclareFun _
     | Type_sig.ComponentBinding _
-    | Type_sig.DisabledComponentBinding _ ->
+    | Type_sig.DisabledComponentBinding _
+    | Type_sig.NamespaceBinding _ ->
       add_named name acc
     | Type_sig.TypeAlias _
     | Type_sig.Interface _
@@ -438,19 +441,21 @@ let of_module type_sig : t = type_sig |> Export_sig.of_module |> of_sig
 
 let of_builtins
     {
-      Packed_type_sig.Builtins.modules;
+      Packed_type_sig.Builtins.global_modules;
       module_refs;
       local_defs;
       remote_refs;
       pattern_defs;
       patterns;
-      globals;
+      global_values;
+      global_types;
     } =
   let global_sig =
     Export_sig.of_builtins ~module_refs ~local_defs ~remote_refs ~pattern_defs ~patterns
   in
   []
-  |> SMap.fold (add_global global_sig) globals
+  |> SMap.fold (add_global global_sig) global_values
+  |> SMap.fold (add_global global_sig) global_types
   |> SMap.fold
        (fun name { Packed_type_sig.Builtins.loc = _; module_kind } acc ->
          let export_sig =
@@ -463,6 +468,6 @@ let of_builtins
              ~patterns
          in
          Module (name, of_sig export_sig) :: acc)
-       modules
+       global_modules
 
 let empty = []

@@ -5,7 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-let detect_sketchy_null_checks cx =
+let detect_sketchy_null_checks cx tast =
+  Exists_marker.mark cx tast;
   let add_error ~loc ~null_loc kind falsy_loc =
     Error_message.ESketchyNullLint { kind; loc; null_loc; falsy_loc } |> Flow_js.add_output cx
   in
@@ -155,7 +156,16 @@ let detect_unused_promises cx =
         ))
     (Context.maybe_unused_promises cx)
 
-let detect_es6_import_export_errors = Strict_es6_import_export.detect_errors
+let enforce_optimize cx loc t =
+  let reason = Reason.mk_reason (Reason.RCustom "$Flow$EnforceOptimized") loc in
+  Flow_js.flow_t cx (Type.InternalT (Type.EnforceUnionOptimized reason), t)
+
+let check_union_opt cx = Context.iter_union_opt cx ~f:(enforce_optimize cx)
+
+let detect_import_export_errors cx program metadata =
+  Strict_es6_import_export.detect_errors cx program metadata;
+  Module_exports_checker.check_program program
+  |> Base.List.iter ~f:(Flow_js_utils.add_output cx ?trace:None)
 
 let detect_non_voidable_properties cx =
   (* This function approximately checks whether VoidT can flow to the provided
@@ -252,14 +262,11 @@ let detect_matching_props_violations cx =
   in
   let matching_props_checks =
     Base.List.filter_map (Context.matching_props cx) ~f:(fun (prop_name, other_loc, obj_loc) ->
-        let env = Context.environment cx in
-        Type_env.check_readable cx Env_api.ExpressionLoc other_loc;
-        let sentinel =
-          Base.Option.value_exn (Loc_env.find_write env Env_api.ExpressionLoc other_loc)
-        in
+        let sentinel = Type_env.checked_find_loc_env_write cx Env_api.ExpressionLoc other_loc in
         match peek cx sentinel with
         (* Limit the check to promitive literal sentinels *)
         | [t] when is_lit t ->
+          let env = Context.environment cx in
           let obj_t = Type_env.provider_type_for_def_loc cx env obj_loc in
           Some (TypeUtil.reason_of_t sentinel, prop_name, sentinel, obj_t)
         | _ -> None
@@ -322,55 +329,15 @@ let detect_literal_subtypes =
         Flow_js.flow cx (l, UseT (use_op, u_def)))
       checks
 
-let check_constrained_writes cx =
-  let prepare_checks ~resolve_t checks =
-    Base.List.map
-      ~f:(fun (t, use_op, u_def) ->
-        let open Type in
-        let open Constraint in
-        let u_def = resolve_t u_def in
-        let (mk_use_op, use_op) =
-          let rec loop = function
-            | Frame ((ConstrainedAssignment _ as frame), op) ->
-              (TypeUtil.mod_use_op_of_use_t (fun op -> Frame (frame, op)), op)
-            | Op _ as op -> ((fun x -> x), op)
-            | Frame (frame, op) ->
-              let (f, op) = loop op in
-              (f, Frame (frame, op))
-          in
-          loop use_op
-        in
-        let u = UseT (use_op, u_def) in
-        match t with
-        | OpenT (_, id) ->
-          let (_, constraints) = Context.find_constraints cx id in
-          begin
-            match constraints with
-            | Unresolved { lower; _ } ->
-              TypeMap.bindings lower
-              |> Base.List.map ~f:(fun (t, (_, use_op)) ->
-                     let t = resolve_t t in
-                     (t, mk_use_op (Flow_js.flow_use_op cx use_op u))
-                 )
-            | Resolved _
-            | FullyResolved _ ->
-              let t = resolve_t t in
-              [(t, mk_use_op (Flow_js.flow_use_op cx unknown_use u))]
-          end
-        | _ ->
-          let t = resolve_t t in
-          [(t, mk_use_op u)])
-      checks
-    |> List.flatten
-  in
-
-  let checks = Context.constrained_writes cx in
-  if not @@ Base.List.is_empty checks then (
-    let (cx, checks) = (cx, prepare_checks ~resolve_t:(fun t -> t) checks) in
-    Base.List.iter ~f:(Flow_js.flow cx) checks;
-    let new_errors = Context.errors cx in
-    Flow_error.ErrorSet.iter (Context.add_error cx) new_errors
+let check_polarity cx =
+  Base.List.iter (Context.post_inference_polarity_checks cx) ~f:(fun (tparams, polarity, t) ->
+      Flow_js.check_polarity cx tparams polarity t
   )
+
+let check_general_post_inference_validations cx =
+  Base.List.iter (Context.post_inference_validation_flows cx) ~f:(fun pair -> Flow_js.flow cx pair)
+
+let check_react_rules cx tast = React_rules.check_react_rules cx tast
 
 let validate_renders_type_arguments cx =
   let open Type in
@@ -455,12 +422,7 @@ let validate_renders_type_arguments cx =
         Flow_js.FlowJs.speculative_subtyping_succeeds
           cx
           t
-          (Flow_js.get_builtin_typeapp
-             cx
-             r
-             (OrdinaryName "$Iterable")
-             [AnyT.error r; AnyT.error r; AnyT.error r]
-          )
+          (Flow_js.get_builtin_typeapp cx r "$Iterable" [AnyT.error r; AnyT.error r; AnyT.error r])
       then
         Some (r, `InvalidRendersIterable)
       else (
@@ -520,6 +482,91 @@ let validate_renders_type_arguments cx =
   in
   Context.renders_type_argument_validations cx |> Base.List.iter ~f:validate_arg
 
+let check_multiplatform_conformance cx ast tast =
+  let (prog_aloc, _) = ast in
+  let filename = Context.file cx in
+  let file_options = (Context.metadata cx).Context.file_options in
+  let file_loc = Loc.{ none with source = Some filename } |> ALoc.of_loc in
+  match
+    Files.relative_interface_mref_of_possibly_platform_specific_file ~options:file_options filename
+  with
+  | Some imported_interface_module_name ->
+    let open Type in
+    (match Context.find_require cx imported_interface_module_name with
+    | Error _ ->
+      (* It's ok if a platform speicific implementation file doesn't have an interface.
+       * It just makes the module non-importable without platform extension. *)
+      ()
+    | Ok interface_module_t ->
+      let get_exports_t ~is_common_interface_module reason module_t =
+        match Flow_js.possible_concrete_types_for_inspection cx reason module_t with
+        | [ModuleT m] ->
+          if
+            is_common_interface_module
+            && Platform_set.no_overlap
+                 (Base.Option.value_exn (Context.available_platforms cx))
+                 (Base.Option.value_exn m.module_available_platforms)
+          then
+            (* If the current module's platform has no overlap with the common interface
+             * file's platforms, then the common interface file is irrelevant. We give it an
+             * any type to make conformance check always passing. *)
+            AnyT.make Untyped reason
+          else
+            Flow_js_utils.ImportModuleNsTKit.on_ModuleT
+              cx
+              ~is_common_interface_module
+              (reason, false)
+              m
+        | _ -> AnyT.make Untyped reason
+      in
+      let interface_t =
+        let reason = Reason.(mk_reason (RCustom "common interface") prog_aloc) in
+        get_exports_t ~is_common_interface_module:true reason interface_module_t
+      in
+      let (self_sig_loc, self_module_t) = Module_info_analyzer.analyze_program cx tast in
+      let self_t =
+        get_exports_t
+          ~is_common_interface_module:false
+          (TypeUtil.reason_of_t self_module_t)
+          self_module_t
+      in
+      (* We need to fully resolve the type to prevent tvar widening. *)
+      Tvar_resolver.resolve cx interface_t;
+      Tvar_resolver.resolve cx self_t;
+      let use_op = Op (ConformToCommonInterface { self_sig_loc; self_module_loc = prog_aloc }) in
+      Flow_js.flow cx (self_t, UseT (use_op, interface_t)))
+  | None ->
+    (match
+       Platform_set.platform_specific_implementation_mrefs_of_possibly_interface_file
+         ~file_options
+         ~platform_set:(Context.available_platforms cx)
+         ~file:filename
+     with
+    | None -> ()
+    | Some impl_mrefs ->
+      let module_exists mref = Base.Result.is_ok @@ Context.find_require cx mref in
+      let mrefs_with_existence_status =
+        List.map (fun mref -> (mref, module_exists mref)) impl_mrefs
+      in
+      if
+        (not (Context.has_explicit_supports_platform cx))
+        && List.for_all (fun (_, exists) -> not exists) mrefs_with_existence_status
+      then
+        (* We are fine if no implementation file exist.
+         * The .js.flow file might be declaring a builtin module. *)
+        ()
+      else
+        (* If one implementation file exist, then all platform specific implementations must exist. *)
+        Base.List.iter mrefs_with_existence_status ~f:(fun (impl_mref, exist) ->
+            if not exist then
+              Flow_js_utils.add_output
+                cx
+                Error_message.(
+                  EPlatformSpecificImplementationModuleLookupFailed
+                    { loc = file_loc; name = impl_mref }
+                )
+        ))
+
 let get_lint_severities metadata strict_mode lint_severities =
   if metadata.Context.strict || metadata.Context.strict_local then
     StrictModeSettings.fold
@@ -530,25 +577,38 @@ let get_lint_severities metadata strict_mode lint_severities =
   else
     lint_severities
 
-(* Post-merge errors.
+(* Post-component errors.
  *
- * At this point, all dependencies have been merged and the component has been
- * linked together. Any constraints should have already been evaluated, which
- * means we can complain about things that either haven't happened yet, or
- * which require complete knowledge of tvar bounds.
+ * At this point, all the types in the components we have checked so far should have been
+ * fully resolved, so we can freely inspect them and run some checks that are not relevant
+ * for deciding a type of a write.
  *)
-let post_merge_checks cx ast metadata =
-  check_constrained_writes cx;
+let post_component_checks cx =
+  check_polarity cx;
+  check_general_post_inference_validations cx;
   validate_renders_type_arguments cx;
-  detect_sketchy_null_checks cx;
-  detect_non_voidable_properties cx;
-  detect_test_prop_misses cx;
   detect_unnecessary_optional_chains cx;
   detect_unnecessary_invariants cx;
-  detect_es6_import_export_errors cx ast metadata;
+  detect_unused_promises cx;
+  check_union_opt cx
+
+(* Post-merge errors.
+ *
+ * At this point, we have visited the entire typed-AST.
+ *
+ * Any constraints should have already been evaluated, which means we can complain about
+ * things that either haven't happened yet, or which require complete knowledge of tvar bounds.
+ *)
+let post_merge_checks cx ast tast metadata =
+  post_component_checks cx;
+  check_react_rules cx tast;
+  check_multiplatform_conformance cx ast tast;
+  detect_sketchy_null_checks cx tast;
+  detect_non_voidable_properties cx;
+  detect_test_prop_misses cx;
+  detect_import_export_errors cx ast metadata;
   detect_matching_props_violations cx;
-  detect_literal_subtypes cx;
-  detect_unused_promises cx
+  detect_literal_subtypes cx
 
 (* Check will lazily create types for the checked file's dependencies. These
  * types are created in the dependency's context and need to be copied into the
@@ -679,8 +739,8 @@ let mk_builtins metadata master_cx =
         (fun mref -> Error (Reason.InternalModuleName mref))
         (fun _ -> !builtins_ref)
     in
-    let global_names =
+    let (values, types, modules) =
       Type_sig_merge.merge_builtins cx builtin_leader_file_key builtin_locs builtins
     in
-    builtins_ref := Builtins.of_name_map ~mapper:Base.Fn.id global_names;
-    (fun dst_cx -> Builtins.of_name_map ~mapper:(copied dst_cx cx) global_names)
+    builtins_ref := Builtins.of_name_map ~mapper:Base.Fn.id ~values ~types ~modules;
+    (fun dst_cx -> Builtins.of_name_map ~mapper:(copied dst_cx cx) ~values ~types ~modules)

@@ -27,7 +27,7 @@ val flow_p :
 
 val flow_use_op : Context.t -> Type.use_op -> Type.use_t -> Type.use_t
 
-val reposition : Context.t -> ALoc.t -> ?desc:reason_desc -> ?annot_loc:ALoc.t -> Type.t -> Type.t
+val reposition : Context.t -> ALoc.t -> Type.t -> Type.t
 
 val reposition_reason : Context.t -> Reason.reason -> ?use_desc:bool -> Type.t -> Type.t
 
@@ -43,6 +43,7 @@ val mk_typeapp_instance_annot :
   use_op:Type.use_op ->
   reason_op:Reason.reason ->
   reason_tapp:Reason.reason ->
+  from_value:bool ->
   ?cache:bool ->
   Type.t ->
   Type.t list ->
@@ -66,13 +67,7 @@ val check_polarity : Context.t -> Type.typeparam Subst_name.Map.t -> Polarity.t 
 (* destructors *)
 
 val mk_type_destructor :
-  Context.t ->
-  Type.use_op ->
-  Reason.reason ->
-  Type.t ->
-  Type.destructor ->
-  Type.Eval.id ->
-  bool * Type.t
+  Context.t -> Type.use_op -> Reason.reason -> Type.t -> Type.destructor -> Type.Eval.id -> Type.t
 
 val mk_possibly_evaluated_destructor :
   Context.t -> Type.use_op -> Reason.reason -> Type.t -> Type.destructor -> Type.Eval.id -> Type.t
@@ -87,23 +82,17 @@ val add_output : Context.t -> Error_message.t -> unit
 
 (* builtins *)
 
-val get_builtin : Context.t -> name -> reason -> Type.t
+val get_builtin_type : Context.t -> reason -> ?use_desc:bool -> string -> Type.t
 
-val get_builtin_result :
-  Context.t -> name -> reason -> (Type.t, Type.t * Env_api.cacheable_env_error Nel.t) result
-
-val get_builtin_type : Context.t -> reason -> ?use_desc:bool -> name -> Type.t
-
-val get_builtin_typeapp : Context.t -> reason -> ?use_desc:bool -> name -> Type.t list -> Type.t
-
-val get_builtin_module : Context.t -> ALoc.t -> string -> Type.tvar
+val get_builtin_typeapp : Context.t -> reason -> ?use_desc:bool -> string -> Type.t list -> Type.t
 
 val mk_instance :
   Context.t -> ?type_t_kind:Type.type_t_kind -> reason -> ?use_desc:bool -> Type.t -> Type.t
 
-val mk_typeof_annotation : Context.t -> reason -> Type.t -> Type.t
-
 val possible_concrete_types_for_inspection : Context.t -> Reason.reason -> Type.t -> Type.t list
+
+val possible_concrete_types_for_imports_exports :
+  Context.t -> Reason.reason -> Type.t -> Type.t list
 
 val singleton_concrete_type_for_inspection : Context.t -> Reason.reason -> Type.t -> Type.t
 

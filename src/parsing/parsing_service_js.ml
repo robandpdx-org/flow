@@ -198,7 +198,7 @@ let do_parse ~options ~docblock ?(locs_to_dirtify = []) content file =
         Parse_skip Skip_non_flow_file
       else
         let (ast, parse_errors) = parse_source_file ~options content file in
-        let (file_sig, tolerable_errors) = parse_file_sig options file docblock ast in
+        let file_sig = parse_file_sig options file docblock ast in
         let requires = File_sig.require_set file_sig |> SSet.elements |> Array.of_list in
         (*If you want efficiency, can compute globals along with file_sig in the above function since scope is computed when computing file_sig*)
         let (_, (_, _, globals)) =
@@ -211,7 +211,7 @@ let do_parse ~options ~docblock ?(locs_to_dirtify = []) content file =
               ast;
               requires;
               file_sig;
-              tolerable_errors;
+              tolerable_errors = [];
               parse_errors = Nel.of_list_exn parse_errors;
             }
         else
@@ -229,7 +229,7 @@ let do_parse ~options ~docblock ?(locs_to_dirtify = []) content file =
                   let err = Signature_error.map (Type_sig_collections.Locs.get locs) err in
                   File_sig.SignatureVerificationError err :: acc
                 | Type_sig.CheckError -> acc)
-              tolerable_errors
+              []
               sig_errors
           in
           Parse_ok { ast; requires; file_sig; locs; type_sig; tolerable_errors; exports; imports }
@@ -473,7 +473,15 @@ let parse
       ~noflow
       ~exported_module
   in
-  let%lwt results = MultiWorkerLwt.fold workers ~job ~neutral:empty_result ~merge ~next in
+  let%lwt results =
+    MultiWorkerLwt.fold
+      workers
+      ~blocking:(Options.blocking_worker_communication options)
+      ~job
+      ~neutral:empty_result
+      ~merge
+      ~next
+  in
   if Options.should_profile options then
     let t2 = Unix.gettimeofday () in
     let num_parsed = FilenameSet.cardinal results.parsed in
@@ -556,6 +564,7 @@ let ensure_parsed ~reader options workers files =
   let%lwt files_missing_asts =
     MultiWorkerLwt.fold
       workers
+      ~blocking:(Options.blocking_worker_communication options)
       ~job
       ~merge:FilenameSet.union
       ~neutral:FilenameSet.empty

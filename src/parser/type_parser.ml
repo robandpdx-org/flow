@@ -5,51 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Ast = Flow_ast
 open Token
 open Parser_env
 open Flow_ast
 open Parser_common
 open Comment_attachment
 
-module type TYPE = sig
-  val _type : env -> (Loc.t, Loc.t) Ast.Type.t
-
-  val type_identifier : env -> (Loc.t, Loc.t) Ast.Identifier.t
-
-  val type_params : env -> (Loc.t, Loc.t) Ast.Type.TypeParams.t option
-
-  val type_args : env -> (Loc.t, Loc.t) Ast.Type.TypeArgs.t option
-
-  val generic : env -> Loc.t * (Loc.t, Loc.t) Ast.Type.Generic.t
-
-  val _object : is_class:bool -> env -> Loc.t * (Loc.t, Loc.t) Type.Object.t
-
-  val interface_helper :
-    env ->
-    (Loc.t * (Loc.t, Loc.t) Ast.Type.Generic.t) list * (Loc.t * (Loc.t, Loc.t) Ast.Type.Object.t)
-
-  val function_param_list : env -> (Loc.t, Loc.t) Type.Function.Params.t
-
-  val component_param_list : env -> (Loc.t, Loc.t) Ast.Type.Component.Params.t
-
-  val annotation : env -> (Loc.t, Loc.t) Ast.Type.annotation
-
-  val annotation_opt : env -> (Loc.t, Loc.t) Ast.Type.annotation_or_hint
-
-  val renders_annotation_opt : env -> (Loc.t, Loc.t) Ast.Type.component_renders_annotation
-
-  val function_return_annotation_opt : env -> (Loc.t, Loc.t) Ast.Function.ReturnAnnot.t
-
-  val predicate_opt : env -> (Loc.t, Loc.t) Ast.Type.Predicate.t option
-
-  val function_return_annotation_and_predicate_opt :
-    env -> (Loc.t, Loc.t) Ast.Function.ReturnAnnot.t * (Loc.t, Loc.t) Ast.Type.Predicate.t option
-
-  val type_guard : env -> (Loc.t, Loc.t) Ast.Type.TypeGuard.t
-end
-
-module Type (Parse : Parser_common.PARSER) : TYPE = struct
+module Type (Parse : Parser_common.PARSER) : Parser_common.TYPE = struct
   type param_list_or_type =
     | ParamList of (Loc.t, Loc.t) Type.Function.Params.t'
     | Type of (Loc.t, Loc.t) Type.t
@@ -271,7 +233,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           )
         )
       in
-      function_with_params env start_loc tparams params
+      function_with_params ~hook:false env start_loc tparams params
     | _ -> param
 
   and prefix env =
@@ -472,6 +434,14 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
     | T_RENDERS_QUESTION
     | T_RENDERS_STAR ->
       with_loc (fun env -> Type.Renders (render_type env)) env
+    | T_IDENTIFIER { raw = "hook"; _ } when (parse_options env).components ->
+      (match Peek.ith_token ~i:1 env with
+      | T_LESS_THAN
+      | T_LPAREN ->
+        hook env
+      | _ ->
+        let (loc, g) = generic env in
+        (loc, Type.Generic g))
     | T_IDENTIFIER _
     | T_EXTENDS (* `extends` is reserved, but recover by treating it as an identifier *)
     | T_STATIC (* `static` is reserved, but recover by treating it as an identifier *) ->
@@ -1055,24 +1025,31 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
   and function_or_group env =
     let start_loc = Peek.loc env in
     match with_loc param_list_or_type env with
-    | (loc, ParamList params) -> function_with_params env start_loc None (loc, params)
+    | (loc, ParamList params) -> function_with_params ~hook:false env start_loc None (loc, params)
     | (_, Type _type) -> _type
 
   and _function env =
     let start_loc = Peek.loc env in
     let tparams = type_params_remove_trailing env (type_params env) in
     let params = function_param_list env in
-    function_with_params env start_loc tparams params
+    function_with_params ~hook:false env start_loc tparams params
 
-  and function_with_params env start_loc tparams (params : (Loc.t, Loc.t) Ast.Type.Function.Params.t)
-      =
+  and function_with_params
+      ~hook env start_loc tparams (params : (Loc.t, Loc.t) Ast.Type.Function.Params.t) =
     with_loc
       ~start_loc
       (fun env ->
         Expect.token env T_ARROW;
         let return = function_return_type env in
-        Type.(Function { Function.params; return; tparams; comments = None }))
+        Type.(Function { Function.params; return; tparams; comments = None; hook }))
       env
+
+  and hook env =
+    let start_loc = Peek.loc env in
+    Eat.token env;
+    let tparams = type_params_remove_trailing env (type_params env) in
+    let params = function_param_list env in
+    function_with_params ~hook:true env start_loc tparams params
 
   and function_return_type env =
     if is_start_of_type_guard env then
@@ -1114,7 +1091,7 @@ module Type (Parse : Parser_common.PARSER) : TYPE = struct
           let params = function_param_list env in
           Expect.token env T_COLON;
           let return = function_return_type env in
-          { Type.Function.params; return; tparams; comments = None })
+          { Type.Function.params; return; tparams; comments = None; hook = false })
         env
     in
     let method_property env start_loc static key ~leading =

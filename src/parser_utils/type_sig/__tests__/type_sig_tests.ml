@@ -165,8 +165,9 @@ let pp_builtins
         remote_refs;
         pattern_defs;
         patterns;
-        globals;
-        modules;
+        global_values;
+        global_types;
+        global_modules;
       }
     ) =
   let open Format in
@@ -176,12 +177,13 @@ let pp_builtins
   pp_remote_refs pp_loc fmt remote_refs;
   pp_pattern_defs pp_loc fmt pattern_defs [||];
   pp_patterns pp_loc fmt patterns;
-  SMap.iter (fun name _ -> fprintf fmt "@.Builtin global %s" name) globals;
+  SMap.iter (fun name _ -> fprintf fmt "@.Builtin global value %s@?" name) global_values;
+  SMap.iter (fun name _ -> fprintf fmt "@.Builtin global type %s@?" name) global_types;
   SMap.iter
     (fun name m ->
       fprintf fmt "@.Builtin module %s:@." name;
       pp_builtin_module pp_loc fmt m)
-    modules;
+    global_modules;
   pp_errors pp_loc fmt errs
 
 let make_test_formatter () =
@@ -213,6 +215,8 @@ let sig_options
     ?(exact_by_default = false)
     ?(enable_enums = true)
     ?(enable_component_syntax = true)
+    ?(enable_ts_syntax = true)
+    ?(hooklike_functions = true)
     ?(enable_relay_integration = false)
     ?(casting_syntax = Options.CastingSyntax.Colon)
     ?relay_integration_module_prefix
@@ -228,6 +232,8 @@ let sig_options
     exact_by_default;
     enable_enums;
     enable_component_syntax;
+    enable_ts_syntax;
+    hooklike_functions;
     enable_relay_integration;
     casting_syntax;
     relay_integration_module_prefix;
@@ -367,7 +373,7 @@ let%expect_test "export_function_literal" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Number [1:36-42]));
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -393,7 +399,7 @@ let%expect_test "export_function_literal_check1" =
                  params = [FunParam {name = (Some "x"); t = (Err [1:24-25])}];
                  rest_param = None; this_param = None;
                  return = (Annot (Number [1:28-34]));
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -402,8 +408,7 @@ let%expect_test "export_function_literal_check1" =
         stars = []; strict = true; platform_availability_set = None}}
 
     Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.ArrayPattern)))
+    (SigError (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.Identifier)))
   |}]
 
 let%expect_test "export_function_literal_check2" =
@@ -423,7 +428,7 @@ let%expect_test "export_function_literal_check2" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [1:27-33]))}];
                  rest_param = None; this_param = None;
                  return = (Err [1:34]);
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -461,7 +466,7 @@ let%expect_test "export_function_reference" =
            params = [FunParam {name = (Some "x"); t = (Annot (Number [1:16-22]))}];
            rest_param = None; this_param = None;
            return = (Annot (Number [1:25-31]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
   |}]
 
@@ -489,12 +494,11 @@ let%expect_test "export_function_reference_check1" =
          FunSig {tparams = Mono; params = [FunParam {name = (Some "x"); t = (Err [1:13-14])}];
            rest_param = None; this_param = None;
            return = (Annot (Number [1:17-23]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
 
     Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([1:13-14], Expected_annotation_sort.ArrayPattern)))
+    (SigError (Signature_error.ExpectedAnnotation ([1:13-14], Expected_annotation_sort.Identifier)))
   |}]
 
 let%expect_test "export_function_reference_check2" =
@@ -521,7 +525,8 @@ let%expect_test "export_function_reference_check2" =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Number [1:16-22]))}];
            rest_param = None; this_param = None;
-           return = (Err [1:23]); predicate = None};
+           return = (Err [1:23]); predicate = None;
+           hook = NonHook};
          statics = {}}
 
     Errors:
@@ -547,7 +552,7 @@ let%expect_test "function_param_optional" =
                  [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:28-34]))))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Void [1:37-41]));
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -573,7 +578,7 @@ let%expect_test "function_param_default" =
                  [FunParam {name = (Some "p"); t = (Annot (Optional (Annot (String [1:27-33]))))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Void [1:44-48]));
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -598,7 +603,7 @@ let%expect_test "function_param_default_check" =
                  params = [FunParam {name = (Some "p"); t = (Annot (Optional (Err [1:24-25])))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Void [1:34]));
-                 predicate = None};
+                 predicate = None; hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -607,8 +612,147 @@ let%expect_test "function_param_default_check" =
         stars = []; strict = true; platform_availability_set = None}}
 
     Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.ArrayPattern)))
+    (SigError (Signature_error.ExpectedAnnotation ([1:24-25], Expected_annotation_sort.Identifier)))
+
+  |}]
+
+let%expect_test "function_param_typeof_reference" =
+  print_sig {|
+    declare const bar: string;
+    export default function(bar: typeof bar, baz: typeof bar, {boz}: {boz: typeof baz}) {}
+  |};
+  [%expect {|
+    ESModule {type_exports = [||];
+      exports =
+      [|ExportDefault {default_loc = [2:7-14];
+          def =
+          (Value
+             FunExpr {loc = [2:15-86];
+               async = false; generator = false;
+               def =
+               FunSig {tparams = Mono;
+                 params =
+                 [FunParam {name = (Some "bar");
+                    t =
+                    (Annot
+                       Typeof {loc = [2:29-39];
+                         qname = ["bar"];
+                         t = (Ref LocalRef {ref_loc = [2:36-39]; index = 0});
+                         targs = None})};
+                   FunParam {name = (Some "baz");
+                     t =
+                     (Annot
+                        Typeof {loc = [2:46-56];
+                          qname = ["bar"];
+                          t = (Ref LocalRef {ref_loc = [2:53-56]; index = 1});
+                          targs = None})};
+                   FunParam {name = None;
+                     t =
+                     (Annot
+                        ObjAnnot {loc = [2:65-82];
+                          obj_kind = InexactObj;
+                          props =
+                          { "boz" ->
+                            (ObjAnnotField ([2:66-69],
+                               (Annot
+                                  Typeof {
+                                    loc = [2:71-81];
+                                    qname = ["baz"];
+                                    t = (Ref LocalRef {ref_loc = [2:78-81]; index = 2});
+                                    targs = None}),
+                               Polarity.Neutral)) };
+                          proto = ObjAnnotImplicitProto})}
+                   ];
+                 rest_param = None; this_param = None;
+                 return = (Annot (Void [2:83]));
+                 predicate = None; hook = NonHook};
+               statics = {}})}
+        |];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"default"|];
+        stars = []; strict = true; platform_availability_set = None}}
+
+    Local defs:
+    0. Variable {id_loc = [1:14-17]; name = "bar"; def = (Annot (String [1:19-25]))}
+    1. Variable {id_loc = [2:24-27];
+         name = "bar";
+         def =
+         (Annot
+            Typeof {loc = [2:29-39];
+              qname = ["bar"]; t = (Ref LocalRef {ref_loc = [2:36-39]; index = 0});
+              targs = None})}
+    2. Variable {id_loc = [2:41-44];
+         name = "baz";
+         def =
+         (Annot
+            Typeof {loc = [2:46-56];
+              qname = ["bar"]; t = (Ref LocalRef {ref_loc = [2:53-56]; index = 1});
+              targs = None})}
+
+  |}]
+
+let%expect_test "component_param_typeof_reference" =
+  print_sig {|
+    declare const bar: string;
+    export component C(bar: typeof bar, baz: typeof bar, booz as {boz}: {boz: typeof baz}) {}
+  |};
+  [%expect {|
+    ESModule {type_exports = [||]; exports = [|(ExportBinding 1)|];
+      info =
+      ESModuleInfo {type_export_keys = [||];
+        type_stars = []; export_keys = [|"C"|];
+        stars = []; strict = true; platform_availability_set = None}}
+
+    Local defs:
+    0. Variable {id_loc = [1:14-17]; name = "bar"; def = (Annot (String [1:19-25]))}
+    1. ComponentBinding {id_loc = [2:17-18];
+         name = "C"; fn_loc = [2:7-86];
+         def =
+         ComponentSig {params_loc = [2:18-86];
+           tparams = Mono;
+           params =
+           [ComponentParam {name = "bar";
+              name_loc = [2:19-22];
+              t =
+              (Annot
+                 Typeof {loc = [2:24-34];
+                   qname = ["bar"]; t = (Ref LocalRef {ref_loc = [2:31-34]; index = 0});
+                   targs = None})};
+             ComponentParam {name = "baz";
+               name_loc = [2:36-39];
+               t =
+               (Annot
+                  Typeof {loc = [2:41-51];
+                    qname = ["bar"];
+                    t = (Ref LocalRef {ref_loc = [2:48-51]; index = 0});
+                    targs = None})};
+             ComponentParam {name = "booz";
+               name_loc = [2:53-57];
+               t =
+               (Annot
+                  ObjAnnot {loc = [2:68-85];
+                    obj_kind = InexactObj;
+                    props =
+                    { "boz" ->
+                      (ObjAnnotField ([2:69-72],
+                         (Annot
+                            Typeof {loc = [2:74-84];
+                              qname = ["baz"];
+                              t =
+                              (Ref BuiltinRef {ref_loc = [2:81-84]; type_ref = false; name = "baz"});
+                              targs = None}),
+                         Polarity.Neutral)) };
+                    proto = ObjAnnotImplicitProto})}
+             ];
+           rest_param = None;
+           renders =
+           (Annot
+              (Renders ([2:86],
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [2:86]; type_ref = true; name = "React$Node"})),
+                 Flow_ast.Type.Renders.Normal)))}}
 
   |}]
 
@@ -745,7 +889,7 @@ let%expect_test "export_class_reference" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Number [3:16-22]));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
   |}]
@@ -785,13 +929,10 @@ let%expect_test "export_class_reference_check1" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Number [3:16-22]));
-                 predicate = None}} };
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-8]), Polarity.Neutral)) }}}
-
-    Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([2:2-8],
-          Expected_annotation_sort.Property {name = "f"})))
+                 predicate = None; hook = NonHook}} };
+           own_props =
+           { "f" ->
+             (ObjValueField ([2:2-3], (Value (NumberLit ([2:6-7], 0., "0"))), Polarity.Neutral)) }}}
   |}]
 
 let%expect_test "export_class_reference_check2" =
@@ -829,12 +970,12 @@ let%expect_test "export_class_reference_check2" =
                  params = [FunParam {name = (Some "x"); t = (Err [3:4-5])}];
                  rest_param = None; this_param = None;
                  return = (Annot (Number [3:8-14]));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
 
     Errors:
-    (SigError (Signature_error.ExpectedAnnotation ([3:4-5], Expected_annotation_sort.ArrayPattern)))
+    (SigError (Signature_error.ExpectedAnnotation ([3:4-5], Expected_annotation_sort.Identifier)))
   |}]
 
 let%expect_test "export_class_reference_check3" =
@@ -872,7 +1013,7 @@ let%expect_test "export_class_reference_check3" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Number [3:7-13]))}];
                  rest_param = None; this_param = None;
                  return = (Err [3:14]);
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" -> (ObjValueField ([2:2-3], (Annot (Number [2:5-11])), Polarity.Neutral)) }}}
 
@@ -925,7 +1066,7 @@ let%expect_test "type_alias_dependencies" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [6:12-14]; index = 2}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([5:2-3],
@@ -979,7 +1120,7 @@ let%expect_test "class_dependencies" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([3:2-3],
@@ -1013,7 +1154,10 @@ let%expect_test "class_dependencies_check" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:10-16]), Polarity.Neutral)) }}}
+           own_props =
+           { "f" ->
+             (ObjValueField ([1:10-11], (
+                Value (NumberLit ([1:14-15], 0., "0"))), Polarity.Neutral)) }}}
     1. ClassBinding {id_loc = [2:6-7];
          name = "C";
          def =
@@ -1032,16 +1176,11 @@ let%expect_test "class_dependencies_check" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([3:2-3],
                 (TyRef (Unqualified LocalRef {ref_loc = [3:5-6]; index = 0})), Polarity.Neutral)) }}}
-
-    Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([1:10-16],
-          Expected_annotation_sort.Property {name = "f"})))
   |}]
 
 let%expect_test "export_new_typecast" =
@@ -1091,7 +1230,7 @@ let%expect_test "export_new_typecast" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([3:2-3],
@@ -1125,7 +1264,10 @@ let%expect_test "export_new_typecast_check" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([1:10-11], (Err [1:10-16]), Polarity.Neutral)) }}}
+           own_props =
+           { "f" ->
+             (ObjValueField ([1:10-11], (
+                Value (NumberLit ([1:14-15], 0., "0"))), Polarity.Neutral)) }}}
     1. ClassBinding {id_loc = [2:6-7];
          name = "C";
          def =
@@ -1144,16 +1286,11 @@ let%expect_test "export_new_typecast_check" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [4:11-12]; index = 0}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([3:2-3],
                 (TyRef (Unqualified LocalRef {ref_loc = [3:5-6]; index = 0})), Polarity.Neutral)) }}}
-
-    Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([1:10-16],
-          Expected_annotation_sort.Property {name = "f"})))
   |}]
 
 let%expect_test "recursive_dependencies" =
@@ -1194,7 +1331,7 @@ let%expect_test "recursive_dependencies" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [3:11-12]; index = 0}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([2:2-3],
@@ -1239,13 +1376,11 @@ let%expect_test "recursive_dependencies_check" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified LocalRef {ref_loc = [3:11-12]; index = 0}));
-                 predicate = None}} };
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-12]), Polarity.Neutral)) }}}
+                 predicate = None; hook = NonHook}} };
+           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:6-11]), Polarity.Neutral)) }}}
 
     Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([2:2-12],
-          Expected_annotation_sort.Property {name = "f"})))
+    (SigError (Signature_error.UnexpectedExpression ([2:6-11], Flow_ast_utils.ExpressionSort.New)))
   |}]
 
 let%expect_test "typeof_dependencies" =
@@ -1424,7 +1559,7 @@ let%expect_test "void_function" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:14]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
   |}]
 
@@ -1451,7 +1586,8 @@ let%expect_test "void_generator" =
          def =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
-           return = (Err [1:15]); predicate = None};
+           return = (Err [1:15]); predicate = None;
+           hook = NonHook};
          statics = {}}
 
     Errors:
@@ -1543,7 +1679,7 @@ let%expect_test "import_type_dependencies" =
                    ];
                  rest_param = None; this_param = None;
                  return = (TyRef (Unqualified RemoteRef {ref_loc = [4:12-14]; index = 2}));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props =
            { "f" ->
              (ObjValueField ([3:2-3],
@@ -1607,7 +1743,7 @@ let%expect_test "qualified_references" =
                       id_loc = [4:17-18];
                       name = "T";
                       qualification = (Unqualified RemoteRef {ref_loc = [4:14-16]; index = 1})});
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props = {}}}
 
     Remote refs:
@@ -1853,8 +1989,9 @@ let%expect_test "scope_extrusion_nested" =
                    (ObjValueField ([11:19-20], (
                       Ref LocalRef {ref_loc = [11:19-20]; index = 1}), Polarity.Neutral));
                    "y" ->
-                   (ObjValueField ([11:22-23], (
-                      Ref BuiltinRef {ref_loc = [11:22-23]; name = "y"}), Polarity.Neutral)) }}));
+                   (ObjValueField ([11:22-23],
+                      (Ref BuiltinRef {ref_loc = [11:22-23]; type_ref = false; name = "y"}),
+                      Polarity.Neutral)) }}));
       info =
       CJSModuleInfo {type_export_keys = [||];
         type_stars = []; strict = true;
@@ -1903,7 +2040,8 @@ let%expect_test "report_all_errors" =
                              rest_param = None;
                              this_param = None;
                              return = (Err [6:16]);
-                             predicate = None};
+                             predicate = None;
+                             hook = NonHook};
                            statics = {}}),
                       Polarity.Neutral)) }}));
       info =
@@ -1918,14 +2056,28 @@ let%expect_test "report_all_errors" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "f" -> (ObjValueField ([2:2-3], (Err [2:2-23]), Polarity.Neutral)) }}}
+           own_props =
+           { "f" ->
+             (ObjValueField ([2:2-3],
+                (Value
+                   FunExpr {loc = [2:6-22];
+                     async = false; generator = false;
+                     def =
+                     FunSig {tparams = Mono;
+                       params = [FunParam {name = (Some "x"); t = (Annot (Number [2:10-16]))}];
+                       rest_param = None;
+                       this_param = None;
+                       return = (Err [2:17]);
+                       predicate = None;
+                       hook = NonHook};
+                     statics = {}}),
+                Polarity.Neutral)) }}}
 
     Errors:
     (SigError
        (Signature_error.ExpectedAnnotation ([6:16], Expected_annotation_sort.FunctionReturn)))
     (SigError
-       (Signature_error.ExpectedAnnotation ([2:2-23],
-          Expected_annotation_sort.Property {name = "f"})))
+       (Signature_error.ExpectedAnnotation ([2:17], Expected_annotation_sort.FunctionReturn)))
   |}]
 
 let%expect_test "munged_methods_ignored_if_directive" =
@@ -1988,7 +2140,7 @@ let%expect_test "munged_methods_not_ignored" =
                FunSig {tparams = Mono;
                  params = []; rest_param = None;
                  this_param = None; return = (Err [2:11]);
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props = {}}}
 
     Errors:
@@ -2048,12 +2200,25 @@ let%expect_test "munged_fields_not_ignored" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = []; static_props = {};
            proto_props = {};
-           own_props = { "_method" -> (ObjValueField ([2:2-9], (Err [2:2-31]), Polarity.Neutral)) }}}
+           own_props =
+           { "_method" ->
+             (ObjValueField ([2:2-9],
+                (Value
+                   FunExpr {loc = [2:12-31];
+                     async = false; generator = false;
+                     def =
+                     FunSig {tparams = Mono;
+                       params = []; rest_param = None;
+                       this_param = None;
+                       return = (Err [2:14]);
+                       predicate = None;
+                       hook = NonHook};
+                     statics = {}}),
+                Polarity.Neutral)) }}}
 
     Errors:
     (SigError
-       (Signature_error.ExpectedAnnotation ([2:2-31],
-          Expected_annotation_sort.Property {name = "_method"})))
+       (Signature_error.ExpectedAnnotation ([2:14], Expected_annotation_sort.FunctionReturn)))
   |}]
 
 let%expect_test "propTypes_static_failure" =
@@ -2081,13 +2246,11 @@ let%expect_test "propTypes_static_failure" =
          ClassSig {tparams = Mono; extends = ClassImplicitExtends;
            implements = [];
            static_props =
-           { "propTypes" -> (ObjValueField ([2:9-18], (Err [2:2-23]), Polarity.Neutral)) };
+           { "propTypes" ->
+             (ObjValueField ([2:9-18],
+                (Value ObjLit {loc = [2:21-23]; frozen = false; proto = None; props = {}}),
+                Polarity.Neutral)) };
            proto_props = {}; own_props = {}}}
-
-    Errors:
-    (SigError
-       (Signature_error.ExpectedAnnotation ([2:2-23],
-          Expected_annotation_sort.Property {name = "propTypes"})))
   |}]
 
 let%expect_test "array_spread" =
@@ -2162,7 +2325,8 @@ let%expect_test "reference_expression1" =
   [%expect {|
     CJSModule {type_exports = [||];
       exports =
-      (Some (Eval ([1:17-27], (Ref BuiltinRef {ref_loc = [1:17-23]; name = "Number"}),
+      (Some (Eval ([1:17-27],
+               (Ref BuiltinRef {ref_loc = [1:17-23]; type_ref = false; name = "Number"}),
                (GetProp "NaN"))));
       info =
       CJSModuleInfo {type_export_keys = [||];
@@ -2193,7 +2357,7 @@ let%expect_test "member_expression" =
   [%expect {|
     CJSModule {type_exports = [||];
       exports =
-      (Some (Eval ([1:17-21], (Ref BuiltinRef {ref_loc = [1:17-18]; name = "a"}),
+      (Some (Eval ([1:17-21], (Ref BuiltinRef {ref_loc = [1:17-18]; type_ref = false; name = "a"}),
                (GetElem (Value (NumberLit ([1:19-20], 0., "0")))))));
       info =
       CJSModuleInfo {type_export_keys = [||];
@@ -2322,7 +2486,7 @@ let%expect_test "named_function_expression" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:31]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
   |}]
 
@@ -2401,7 +2565,7 @@ let%expect_test "bound_coverage" =
                  [FunParam {name = None; t = (Annot Bound {ref_loc = [2:26-27]; name = "X"})}];
                  rest_param = None; this_param = None;
                  return = (Annot (Void [2:32-36]));
-                 predicate = None}
+                 predicate = None; hook = NonHook}
                )))}
   |}]
 
@@ -2493,7 +2657,9 @@ let%expect_test "fbt_empty_open_close" =
   |};
   [%expect {|
     CJSModule {type_exports = [||];
-      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"})));
+      exports =
+      (Some (TyRef
+               (Unqualified BuiltinRef {ref_loc = [1:18-21]; type_ref = true; name = "FbtElement"})));
       info =
       CJSModuleInfo {type_export_keys = [||];
         type_stars = []; strict = true;
@@ -2506,7 +2672,9 @@ let%expect_test "fbt_empty_open" =
   |};
   [%expect {|
     CJSModule {type_exports = [||];
-      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [1:18-21]; name = "FbtElement"})));
+      exports =
+      (Some (TyRef
+               (Unqualified BuiltinRef {ref_loc = [1:18-21]; type_ref = true; name = "FbtElement"})));
       info =
       CJSModuleInfo {type_export_keys = [||];
         type_stars = []; strict = true;
@@ -2520,7 +2688,9 @@ let%expect_test "fbt_with_child" =
   |};
   [%expect {|
     CJSModule {type_exports = [||];
-      exports = (Some (TyRef (Unqualified BuiltinRef {ref_loc = [2:18-21]; name = "FbtElement"})));
+      exports =
+      (Some (TyRef
+               (Unqualified BuiltinRef {ref_loc = [2:18-21]; type_ref = true; name = "FbtElement"})));
       info =
       CJSModuleInfo {type_export_keys = [||];
         type_stars = []; strict = true;
@@ -2603,7 +2773,8 @@ let%expect_test "function_return" =
            params =
            [FunParam {name = (Some "x"); t = (Annot Bound {ref_loc = [2:36-37]; name = "X"})}];
            rest_param = None; this_param = None;
-           return = (Err [2:38]); predicate = None};
+           return = (Err [2:38]); predicate = None;
+           hook = NonHook};
          statics = {}}
 
     Errors:
@@ -2651,11 +2822,13 @@ let%expect_test "function_return_2" =
                       rest_param = None;
                       this_param = None;
                       return = (Annot (Void [2:37-41]));
-                      predicate = None}
+                      predicate = None;
+                      hook = NonHook}
                     )))}
              ];
            rest_param = None; this_param = None;
-           return = (Err [2:42]); predicate = None};
+           return = (Err [2:42]); predicate = None;
+           hook = NonHook};
          statics = {}}
 
     Errors:
@@ -2689,7 +2862,7 @@ let%expect_test "function_statics" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:16-20]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = { "x" -> ([3:4-5], (Ref LocalRef {ref_loc = [3:8-9]; index = 1})) }}
     1. Variable {id_loc = [2:6-7]; name = "x"; def = (Value (NumberLit ([2:10-12], 42., "42")))}
   |}]
@@ -2717,7 +2890,7 @@ let%expect_test "function_statics_conditional" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:23-27]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
   |}]
 
@@ -2744,7 +2917,8 @@ let%expect_test "function_predicates_1" =
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:23-28]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [2:31-38]));
-           predicate = (Some (Predicate ([3:2-21], None)))};
+           predicate = (Some (Predicate ([3:2-21], None)));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "function_predicates_2" =
@@ -2769,7 +2943,8 @@ let%expect_test "function_predicates_2" =
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:24-29]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [1:32-39]));
-           predicate = (Some (Predicate ([1:40-59], (Some (NullP "x")))))};
+           predicate = (Some (Predicate ([1:40-59], (Some (NullP "x")))));
+           hook = NonHook};
          tail = []}
     1. FunBinding {id_loc = [2:16-19];
          name = "foo"; async = false;
@@ -2783,9 +2958,13 @@ let%expect_test "function_predicates_2" =
            (Some (Predicate ([3:2-16],
                     (Some (LatentP ((
                              Ref LocalRef {ref_loc = [3:9-12]; index = 0}), None,
-                             [(Arg (Ref BuiltinRef {ref_loc = [3:13-14]; name = "x"}))],
+                             [(Arg
+                                 (Ref
+                                    BuiltinRef {ref_loc = [3:13-14]; type_ref = false; name = "x"}))
+                               ],
                              (("x", 0), []))))
-                    )))};
+                    )));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "function_predicates_3" =
@@ -2808,7 +2987,8 @@ let%expect_test "function_predicates_3" =
          FunSig {tparams = Mono;
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:16-21]))}];
            rest_param = None; this_param = None;
-           return = (Err [1:22]); predicate = (Some (Predicate ([1:34-52], (Some (NullP "x")))))};
+           return = (Err [1:22]); predicate = (Some (Predicate ([1:34-52], (Some (NullP "x")))));
+           hook = NonHook};
          statics = {}}
     1. DeclareFun {id_loc = [2:24-27];
          name = "foo"; fn_loc = [2:27-46];
@@ -2821,9 +3001,13 @@ let%expect_test "function_predicates_3" =
            (Some (Predicate ([2:47-62],
                     (Some (LatentP ((
                              Ref LocalRef {ref_loc = [2:55-58]; index = 0}), None,
-                             [(Arg (Ref BuiltinRef {ref_loc = [2:59-60]; name = "x"}))],
+                             [(Arg
+                                 (Ref
+                                    BuiltinRef {ref_loc = [2:59-60]; type_ref = false; name = "x"}))
+                               ],
                              (("x", 0), []))))
-                    )))};
+                    )));
+           hook = NonHook};
          tail = []}
 
     Errors:
@@ -2854,7 +3038,8 @@ let%expect_test "function_predicates_4" =
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [3:25-30]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [3:33-40]));
-           predicate = (Some (Predicate ([4:2-17], None)))};
+           predicate = (Some (Predicate ([4:2-17], None)));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "function_predicates_5" =
@@ -2880,7 +3065,8 @@ let%expect_test "function_predicates_5" =
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [2:25-30]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [2:33-40]));
-           predicate = (Some (Predicate ([3:2-19], None)))};
+           predicate = (Some (Predicate ([3:2-19], None)));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "function_predicates_6_unsupported_spread" =
@@ -2905,7 +3091,8 @@ let%expect_test "function_predicates_6_unsupported_spread" =
            params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:23-28]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [1:31-38]));
-           predicate = (Some (Predicate ([2:2-19], None)))};
+           predicate = (Some (Predicate ([2:2-19], None)));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "function_predicates_7_latent_with_targs" =
@@ -2944,7 +3131,7 @@ let%expect_test "function_predicates_7_latent_with_targs" =
              FunParam {name = (Some "y"); t = (Annot Bound {ref_loc = [2:44-45]; name = "B"})}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [2:48-55]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          tail = []}
     2. FunBinding {id_loc = [3:16-19];
          name = "foo"; async = false;
@@ -2960,10 +3147,13 @@ let%expect_test "function_predicates_7_latent_with_targs" =
                              Ref LocalRef {ref_loc = [4:9-13]; index = 1}),
                              (Some [(ExplicitArg (Annot (Number [4:14-20])));
                                     (ImplicitArg [4:22-23])]),
-                             [(Arg (Ref BuiltinRef {ref_loc = [4:25-26]; name = "x"}));
+                             [(Arg
+                                 (Ref
+                                    BuiltinRef {ref_loc = [4:25-26]; type_ref = false; name = "x"}));
                                (Arg (Ref LocalRef {ref_loc = [4:28-29]; index = 0}))],
                              (("x", 0), []))))
-                    )))};
+                    )));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "async_function_1" =
@@ -2987,7 +3177,7 @@ let%expect_test "async_function_1" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (AsyncVoidReturn [1:20]);
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}}
   |}]
 
@@ -3011,7 +3201,8 @@ let%expect_test "async_function_2" =
          def =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
-           return = (Err [1:20]); predicate = None};
+           return = (Err [1:20]); predicate = None;
+           hook = NonHook};
          statics = {}}
 
     Errors:
@@ -3034,7 +3225,8 @@ let%expect_test "async_function_3" =
                    params = []; rest_param = None;
                    this_param = None;
                    return = (Err [1:25]);
-                   predicate = None};
+                   predicate = None;
+                   hook = NonHook};
                  statics = {}}));
       info =
       CJSModuleInfo {type_export_keys = [||];
@@ -3203,7 +3395,8 @@ let%expect_test "interface_method" =
                     params = []; rest_param = None;
                     this_param = None;
                     return = (Annot (Void [1:26-30]));
-                    predicate = None}),
+                    predicate = None;
+                    hook = NonHook}),
                  [])) };
            calls = []; dict = None}}
   |}]
@@ -3260,7 +3453,8 @@ let%expect_test "object_annot_method" =
                     params = []; rest_param = None;
                     this_param = None;
                     return = (Annot (Void [1:23-27]));
-                    predicate = None}} };
+                    predicate = None;
+                    hook = NonHook}} };
               proto = ObjAnnotImplicitProto})} |}]
 
 let%expect_test "object_annot_call_poly" =
@@ -3299,13 +3493,19 @@ let%expect_test "object_annot_call_poly" =
                             []));
                          params =
                          [FunParam {name = None;
-                            t = (TyRef (Unqualified BuiltinRef {ref_loc = [1:22-23]; name = "X"}))}
+                            t =
+                            (TyRef
+                               (Unqualified
+                                  BuiltinRef {ref_loc = [1:22-23]; type_ref = true; name = "X"}))}
                            ];
                          rest_param = None;
                          this_param = None;
                          return =
-                         (TyRef (Unqualified BuiltinRef {ref_loc = [1:26-27]; name = "X"}));
-                         predicate = None}
+                         (TyRef
+                            (Unqualified
+                               BuiltinRef {ref_loc = [1:26-27]; type_ref = true; name = "X"}));
+                         predicate = None;
+                         hook = NonHook}
                        ))),
                  [])}})} |}]
 
@@ -3339,7 +3539,8 @@ let%expect_test "object_annot_multiple_call" =
                          rest_param = None;
                          this_param = None;
                          return = (Annot (String [1:34-40]));
-                         predicate = None}
+                         predicate = None;
+                         hook = NonHook}
                        ))),
                  [(Annot
                      (FunAnnot ([1:18-28],
@@ -3348,7 +3549,8 @@ let%expect_test "object_annot_multiple_call" =
                           rest_param = None;
                           this_param = None;
                           return = (Annot (Number [1:22-28]));
-                          predicate = None}
+                          predicate = None;
+                          hook = NonHook}
                         )))
                    ])}})}
   |}]
@@ -3371,7 +3573,7 @@ let%expect_test "destruct_object_shared" =
     2. Variable {id_loc = [1:24-25]; name = "d"; def = (Pattern 4)}
 
     Pattern defs:
-    0. (Ref BuiltinRef {ref_loc = [1:30-31]; name = "e"})
+    0. (Ref BuiltinRef {ref_loc = [1:30-31]; type_ref = false; name = "e"})
 
     Patterns:
     0. (PDef 0)
@@ -3400,7 +3602,7 @@ let%expect_test "destruct_array_shared" =
     3. Variable {id_loc = [1:24-25]; name = "d"; def = (Pattern 5)}
 
     Pattern defs:
-    0. (Ref BuiltinRef {ref_loc = [1:30-31]; name = "e"})
+    0. (Ref BuiltinRef {ref_loc = [1:30-31]; type_ref = false; name = "e"})
 
     Patterns:
     0. (PDef 0)
@@ -3569,7 +3771,8 @@ let%expect_test "typeof loc" =
               qname = ["q"; "p"; "o"];
               t =
               (Eval ([1:25-26],
-                 (Eval ([1:23-24], (Ref BuiltinRef {ref_loc = [1:21-22]; name = "o"}),
+                 (Eval ([1:23-24],
+                    (Ref BuiltinRef {ref_loc = [1:21-22]; type_ref = false; name = "o"}),
                     (GetProp "p"))),
                  (GetProp "q")));
               targs = None})} |}]
@@ -3596,8 +3799,10 @@ let%expect_test "qualified_generic_typeapp_loc" =
              qualification =
              Qualified {loc = [1:22-25];
                id_loc = [1:24-25]; name = "P";
-               qualification = (Unqualified BuiltinRef {ref_loc = [1:22-23]; name = "O"})}};
-           targs = [(TyRef (Unqualified BuiltinRef {ref_loc = [1:28-29]; name = "T"}))]}} |}]
+               qualification =
+               (Unqualified BuiltinRef {ref_loc = [1:22-23]; type_ref = true; name = "O"})}};
+           targs =
+           [(TyRef (Unqualified BuiltinRef {ref_loc = [1:28-29]; type_ref = true; name = "T"}))]}} |}]
 
 let%expect_test "temporary_object_annot" =
   print_sig {|
@@ -3786,7 +3991,7 @@ let%expect_test "class_this" =
                FunSig {tparams = Mono;
                  params = []; rest_param = None;
                  this_param = None; return = (Annot Bound {ref_loc = [2:7-11]; name = "this"});
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props = {}}} |}]
 
 let%expect_test "declare_class_this" =
@@ -3818,7 +4023,8 @@ let%expect_test "declare_class_this" =
                     params = []; rest_param = None;
                     this_param = None;
                     return = (Annot Bound {ref_loc = [2:7-11]; name = "this"});
-                    predicate = None}),
+                    predicate = None;
+                    hook = NonHook}),
                  [])) };
            static_calls = []; calls = [];
            dict = None; static_dict = None}} |}]
@@ -3981,7 +4187,8 @@ let%expect_test "cjs_export_fun_expr_props" =
                    params = []; rest_param = None;
                    this_param = None;
                    return = (Annot (Void [1:27]));
-                   predicate = None};
+                   predicate = None;
+                   hook = NonHook};
                  statics =
                  { "bar" -> ([3:8-11], (Value (NumberLit ([3:14-15], 1., "1"))));
                    "foo" -> ([2:15-18], (Value (NumberLit ([2:21-22], 0., "0")))) }}));
@@ -4012,7 +4219,7 @@ let%expect_test "cjs_export_fun_binding_props" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:31]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics =
          { "bar" -> ([3:8-11], (Value (NumberLit ([3:14-15], 1., "1"))));
            "foo" -> ([2:15-18], (Value (NumberLit ([2:21-22], 0., "0")))) }} |}]
@@ -4037,7 +4244,7 @@ let%expect_test "es_export_named_fun_props" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:21]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 1., "1")))) }} |}]
 
 let%expect_test "es_export_default_fun_props" =
@@ -4061,7 +4268,7 @@ let%expect_test "es_export_default_fun_props" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:29]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 1., "1")))) }} |}]
 
 let%expect_test "fun_binding_assign" =
@@ -4086,7 +4293,7 @@ let%expect_test "fun_binding_assign" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:14]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }} |}]
 
 let%expect_test "fun_const_assign" =
@@ -4113,7 +4320,7 @@ let%expect_test "fun_const_assign" =
               FunSig {tparams = Mono;
                 params = []; rest_param = None;
                 this_param = None; return = (Annot (Void [1:22]));
-                predicate = None};
+                predicate = None; hook = NonHook};
               statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }})} |}]
 
 let%expect_test "ref_const_assign" =
@@ -4138,7 +4345,7 @@ let%expect_test "ref_const_assign" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:24]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = { "bar" -> ([2:4-7], (Value (NumberLit ([2:10-11], 0., "0")))) }}
     1. Variable {id_loc = [1:6-9]; name = "foo";
          def = (Ref LocalRef {ref_loc = [1:21-22]; index = 0})} |}]
@@ -4282,7 +4489,8 @@ let%expect_test "predicate_exists" =
                    ];
                  rest_param = None; this_param = None;
                  return = (Annot (Mixed [1:37-42]));
-                 predicate = (Some (Predicate ([2:2-11], (Some (ExistsP "x")))))};
+                 predicate = (Some (Predicate ([2:2-11], (Some (ExistsP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4314,7 +4522,8 @@ let%expect_test "predicate_instanceof" =
                  (Some (Predicate ([3:2-24],
                           (Some (InstanceofP ("x", (
                                    Ref LocalRef {ref_loc = [3:22-23]; index = 0}))))
-                          )))};
+                          )));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4349,7 +4558,8 @@ let%expect_test "predicate_typeof" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-30], (Some (StrP ("x", [2:9-29]))))))};
+                 predicate = (Some (Predicate ([2:2-30], (Some (StrP ("x", [2:9-29]))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4376,7 +4586,8 @@ let%expect_test "predicate_typeof_template_literal" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-30], (Some (StrP ("x", [2:9-29]))))))};
+                 predicate = (Some (Predicate ([2:2-30], (Some (StrP ("x", [2:9-29]))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4404,7 +4615,8 @@ let%expect_test "predicate_literal_string" =
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
                  predicate =
-                 (Some (Predicate ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo"))))))};
+                 (Some (Predicate ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo"))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4433,7 +4645,8 @@ let%expect_test "predicate_literal_number" =
                  return = (Annot (Boolean [1:35-42]));
                  predicate =
                  (Some (Predicate ([2:2-18],
-                          (Some (SingletonNumP ("x", [2:15-17], true, 42., "42"))))))};
+                          (Some (SingletonNumP ("x", [2:15-17], true, 42., "42"))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4461,7 +4674,8 @@ let%expect_test "predicate_literal_boolean" =
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
                  predicate =
-                 (Some (Predicate ([2:2-20], (Some (SingletonBoolP ("x", [2:15-19], true))))))};
+                 (Some (Predicate ([2:2-20], (Some (SingletonBoolP ("x", [2:15-19], true))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4488,7 +4702,8 @@ let%expect_test "predicate_literal_null" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-20], (Some (NullP "x")))))};
+                 predicate = (Some (Predicate ([2:2-20], (Some (NullP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4515,7 +4730,8 @@ let%expect_test "predicate_maybe" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-19], (Some (MaybeP "x")))))};
+                 predicate = (Some (Predicate ([2:2-19], (Some (MaybeP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4543,7 +4759,8 @@ let%expect_test "predicate_template_literal" =
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
                  predicate =
-                 (Some (Predicate ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo"))))))};
+                 (Some (Predicate ([2:2-21], (Some (SingletonStrP ("x", [2:15-20], true, "foo"))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4572,7 +4789,8 @@ let%expect_test "predicate_negative_number_literal" =
                  return = (Annot (Boolean [1:35-42]));
                  predicate =
                  (Some (Predicate ([2:2-19],
-                          (Some (SingletonNumP ("x", [2:15-18], true, -42., "-42"))))))};
+                          (Some (SingletonNumP ("x", [2:15-18], true, -42., "-42"))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4599,7 +4817,8 @@ let%expect_test "predicate_undefined" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-25], (Some (VoidP "x")))))};
+                 predicate = (Some (Predicate ([2:2-25], (Some (VoidP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4628,7 +4847,8 @@ let%expect_test "predicate_undefined_shadow" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-25], (Some (VoidP "x")))))};
+                 predicate = (Some (Predicate ([2:2-25], (Some (VoidP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4655,7 +4875,8 @@ let%expect_test "predicate_void" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-22], (Some (VoidP "x")))))};
+                 predicate = (Some (Predicate ([2:2-22], (Some (VoidP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4688,7 +4909,8 @@ let%expect_test "predicate_sentinel_string" =
                  return = (Annot (Boolean [2:31-38]));
                  predicate =
                  (Some (Predicate ([3:2-26], (Some (
-                          SentinelStrP ("o", "type", [3:20-25], "foo"))))))};
+                          SentinelStrP ("o", "type", [3:20-25], "foo"))))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4730,7 +4952,8 @@ let%expect_test "predicate_sentinel_expr" =
                  (Some (Predicate ([4:2-24],
                           (Some (SentinelExprP ("o", "type",
                                    (Ref LocalRef {ref_loc = [4:20-23]; index = 0}))))
-                          )))};
+                          )));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4766,7 +4989,8 @@ let%expect_test "predicate_Array_isArray" =
                  params = [FunParam {name = (Some "x"); t = (Annot (Mixed [1:27-32]))}];
                  rest_param = None; this_param = None;
                  return = (Annot (Boolean [1:35-42]));
-                 predicate = (Some (Predicate ([2:2-26], (Some (ArrP "x")))))};
+                 predicate = (Some (Predicate ([2:2-26], (Some (ArrP "x")))));
+                 hook = NonHook};
                statics = {}})}
         |];
       info =
@@ -4802,7 +5026,8 @@ let%expect_test "predicate_latent" =
            params = [FunParam {name = (Some "a"); t = (Annot (Mixed [1:14-19]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [1:22-29]));
-           predicate = (Some (Predicate ([2:2-31], (Some (StrP ("a", [2:9-30]))))))};
+           predicate = (Some (Predicate ([2:2-31], (Some (StrP ("a", [2:9-30]))))));
+           hook = NonHook};
          statics = {}}
     1. FunBinding {id_loc = [4:9-10];
          name = "g"; async = false; generator = false;
@@ -4814,7 +5039,8 @@ let%expect_test "predicate_latent" =
              FunParam {name = (Some "b"); t = (Annot (Mixed [4:24-29]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [4:32-39]));
-           predicate = (Some (Predicate ([5:2-31], (Some (NumP ("b", [5:9-30]))))))};
+           predicate = (Some (Predicate ([5:2-31], (Some (NumP ("b", [5:9-30]))))));
+           hook = NonHook};
          statics = {}}
     2. FunBinding {id_loc = [7:16-17];
          name = "h"; async = false; generator = false;
@@ -4831,15 +5057,26 @@ let%expect_test "predicate_latent" =
                     (Some (AndP (
                              (LatentP ((
                                 Ref LocalRef {ref_loc = [8:10-11]; index = 0}), None,
-                                [(Arg (Ref BuiltinRef {ref_loc = [8:12-13]; name = "a"}))],
+                                [(Arg
+                                    (
+                                    Ref
+                                    BuiltinRef {ref_loc = [8:12-13]; type_ref = false; name = "a"}))
+                                  ],
                                 (("a", 0), []))),
                              (LatentP ((
                                 Ref LocalRef {ref_loc = [8:18-19]; index = 1}), None,
-                                [(Arg (Ref BuiltinRef {ref_loc = [8:20-21]; name = "a"}));
-                                  (Arg (Ref BuiltinRef {ref_loc = [8:23-24]; name = "b"}))],
+                                [(Arg
+                                    (
+                                    Ref
+                                    BuiltinRef {ref_loc = [8:20-21]; type_ref = false; name = "a"}));
+                                  (Arg
+                                    (Ref
+                                    BuiltinRef {ref_loc = [8:23-24]; type_ref = false; name = "b"}))
+                                  ],
                                 (("b", 1), [("a", 0)])))
                              )))
-                    )))};
+                    )));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "predicate_latent_non_param_identifiers" =
@@ -4868,7 +5105,8 @@ let%expect_test "predicate_latent_non_param_identifiers" =
              FunParam {name = (Some "y"); t = (Annot (Mixed [2:34-39]))}];
            rest_param = None; this_param = None;
            return = (Annot (Boolean [2:42-49]));
-           predicate = (Some (Predicate ([2:50-80], (Some (NumP ("x", [2:58-79]))))))};
+           predicate = (Some (Predicate ([2:50-80], (Some (NumP ("x", [2:58-79]))))));
+           hook = NonHook};
          tail = []}
     2. FunBinding {id_loc = [3:16-19];
          name = "bar"; async = false;
@@ -4882,10 +5120,13 @@ let%expect_test "predicate_latent_non_param_identifiers" =
            (Some (Predicate ([4:2-19],
                     (Some (LatentP ((
                              Ref LocalRef {ref_loc = [4:9-12]; index = 1}), None,
-                             [(Arg (Ref BuiltinRef {ref_loc = [4:13-14]; name = "x"}));
+                             [(Arg
+                                 (Ref
+                                    BuiltinRef {ref_loc = [4:13-14]; type_ref = false; name = "x"}));
                                (Arg (Ref LocalRef {ref_loc = [4:16-17]; index = 0}))],
                              (("x", 0), []))))
-                    )))};
+                    )));
+           hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "long_string_lit" =
@@ -4930,7 +5171,7 @@ let%expect_test "export_default_function_binding" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:29-33]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "export_default_class_binding" =
@@ -4972,7 +5213,7 @@ let%expect_test "declared_export_default_function_binding" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
            return = (Annot (Void [1:37-41]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          tail = []} |}]
 
 let%expect_test "declared_export_default_class_binding" =
@@ -5229,7 +5470,8 @@ let%expect_test "builtins" =
          name = "x"; def = (TyRef (Unqualified LocalRef {ref_loc = [1:15-16]; index = 1}))}
     1. TypeAlias {id_loc = [2:5-6]; name = "T"; tparams = Mono; body = (Annot (String [2:9-15]))}
 
-    Builtin global T |}]
+    Builtin global value x
+    Builtin global type T |}]
 
 let%expect_test "builtins_ignore_name_def_for_use_special_cased_names" =
   print_builtins [{|
@@ -5253,7 +5495,9 @@ let%expect_test "builtins_ignore_name_def_for_use_special_cased_names" =
                     props =
                     { "foo" ->
                       (ObjAnnotField ([2:21-24],
-                         (TyRef (Unqualified BuiltinRef {ref_loc = [2:26-29]; name = "bar"})),
+                         (TyRef
+                            (Unqualified
+                               BuiltinRef {ref_loc = [2:26-29]; type_ref = true; name = "bar"})),
                          Polarity.Neutral)) };
                     proto = ObjAnnotImplicitProto})
                )))}
@@ -5270,9 +5514,10 @@ let%expect_test "builtins_ignore_name_def_for_use_special_cased_names" =
          name = "$ReadOnly"; tparams = Mono;
          body = (Annot (Number [4:17-23]))}
 
-    Builtin global $ReadOnly
-    Builtin global Array
-    Builtin global T1 |}]
+    Builtin global value Array
+    Builtin global type $ReadOnly
+    Builtin global type T1
+    Builtin global type T2 |}]
 
 let%expect_test "builtin_cjs_module" =
   print_builtins [{|
@@ -5285,7 +5530,7 @@ let%expect_test "builtin_cjs_module" =
     Local defs:
     0. TypeAlias {id_loc = [1:5-6]; name = "T"; tparams = Mono; body = (Annot (String [1:9-15]))}
 
-    Builtin global T
+    Builtin global type T
     Builtin module foo:
     [2:15-18] CJSModule {type_exports = [||];
                 exports = (Some (TyRef (Unqualified LocalRef {ref_loc = [3:26-27]; index = 0})));
@@ -5308,7 +5553,7 @@ let%expect_test "builtin_cjs_ignore_later" =
     Local defs:
     0. TypeAlias {id_loc = [1:5-6]; name = "T"; tparams = Mono; body = (Annot (String [1:9-15]))}
 
-    Builtin global T
+    Builtin global type T
     Builtin module foo:
     [2:15-18] CJSModule {type_exports = [||];
                 exports = (Some (Annot (String [3:26-32])));
@@ -5412,8 +5657,14 @@ let%expect_test "builtin_cjs_module_with_implicit_exports" =
   print_builtins [{|
     declare module foo {
       declare var x: string;
+      declare const y: string;
+      declare let z: string;
+      const zRef = z;
+      function empty() {}
       declare function f(): void;
       declare class Y {}
+      declare component foo()
+      declare enum A { B }
       declare type T = number;
       declare export type U = string;
     }
@@ -5421,15 +5672,17 @@ let%expect_test "builtin_cjs_module_with_implicit_exports" =
   [%expect {|
     Local defs:
     0. Variable {id_loc = [2:14-15]; name = "x"; def = (Annot (String [2:17-23]))}
-    1. DeclareFun {id_loc = [3:19-20];
-         name = "f"; fn_loc = [3:20-28];
+    1. Variable {id_loc = [3:16-17]; name = "y"; def = (Annot (String [3:19-25]))}
+    2. Variable {id_loc = [4:14-15]; name = "z"; def = (Annot (String [4:17-23]))}
+    3. DeclareFun {id_loc = [7:19-20];
+         name = "f"; fn_loc = [7:20-28];
          def =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = None;
-           return = (Annot (Void [3:24-28]));
-           predicate = None};
+           return = (Annot (Void [7:24-28]));
+           predicate = None; hook = NonHook};
          tail = []}
-    2. DeclareClassBinding {id_loc = [4:16-17];
+    4. DeclareClassBinding {id_loc = [8:16-17];
          name = "Y";
          def =
          DeclareClassSig {tparams = Mono;
@@ -5438,28 +5691,65 @@ let%expect_test "builtin_cjs_module_with_implicit_exports" =
            static_props = {}; own_props = {};
            proto_props = {}; static_calls = [];
            calls = []; dict = None; static_dict = None}}
-    3. TypeAlias {id_loc = [5:15-16]; name = "T"; tparams = Mono; body = (Annot (Number [5:19-25]))}
-    4. TypeAlias {id_loc = [6:22-23]; name = "U"; tparams = Mono; body = (Annot (String [6:26-32]))}
+    5. ComponentBinding {id_loc = [9:20-23];
+         name = "foo"; fn_loc = [9:2-25];
+         def =
+         ComponentSig {params_loc = [9:23-25];
+           tparams = Mono; params = [];
+           rest_param = None;
+           renders =
+           (Annot
+              (Renders ([9:25],
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [9:25]; type_ref = true; name = "React$Node"})),
+                 Flow_ast.Type.Renders.Normal)))}}
+    6. EnumBinding {id_loc = [10:15-16];
+         name = "A"; rep = StringRep {truthy = true};
+         members = { "B" -> [10:19-20] };
+         has_unknown_members = false}
+    7. TypeAlias {id_loc = [11:15-16];
+         name = "T"; tparams = Mono;
+         body = (Annot (Number [11:19-25]))}
+    8. TypeAlias {id_loc = [12:22-23];
+         name = "U"; tparams = Mono;
+         body = (Annot (String [12:26-32]))}
 
     Builtin module foo:
-    [1:15-18] CJSModule {type_exports = [|(ExportTypeBinding 3); (ExportTypeBinding 4)|];
+    [1:15-18] CJSModule {type_exports = [|(ExportTypeBinding 7); (ExportTypeBinding 8)|];
                 exports =
                 (Some (Value
                          DeclareModuleImplicitlyExportedObject {
                            loc = [1:15-18];
                            module_name = "foo";
                            props =
-                           { "Y" ->
+                           { "A" ->
                              (ObjValueField ([1:15-18],
-                                (Ref LocalRef {ref_loc = [1:15-18]; index = 2}), Polarity.Positive
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 6}), Polarity.Positive
+                                ));
+                             "Y" ->
+                             (ObjValueField ([1:15-18],
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 4}), Polarity.Positive
                                 ));
                              "f" ->
                              (ObjValueField ([1:15-18],
-                                (Ref LocalRef {ref_loc = [1:15-18]; index = 1}), Polarity.Positive
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 3}), Polarity.Positive
+                                ));
+                             "foo" ->
+                             (ObjValueField ([1:15-18],
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 5}), Polarity.Positive
                                 ));
                              "x" ->
                              (ObjValueField ([1:15-18],
                                 (Ref LocalRef {ref_loc = [1:15-18]; index = 0}), Polarity.Positive
+                                ));
+                             "y" ->
+                             (ObjValueField ([1:15-18],
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 1}), Polarity.Positive
+                                ));
+                             "z" ->
+                             (ObjValueField ([1:15-18],
+                                (Ref LocalRef {ref_loc = [1:15-18]; index = 2}), Polarity.Positive
                                 )) }}));
                 info =
                 CJSModuleInfo {type_export_keys = [|"T"; "U"|];
@@ -5538,7 +5828,8 @@ let%expect_test "builtin_toplevel_import" =
     Local defs:
     0. Variable {id_loc = [2:21-22]; name = "x"; def = (Annot (String [2:24-30]))}
     1. Variable {id_loc = [6:21-22];
-         name = "y"; def = (TyRef (Unqualified BuiltinRef {ref_loc = [6:24-25]; name = "x"}))}
+         name = "y";
+         def = (TyRef (Unqualified BuiltinRef {ref_loc = [6:24-25]; type_ref = true; name = "x"}))}
 
     Builtin module bar:
     [5:15-18] ESModule {type_exports = [||];
@@ -5581,6 +5872,62 @@ let%expect_test "builtin_module_export_specifiers" =
                   stars = []; strict = true;
                   platform_availability_set = None}} |}]
 
+let%expect_test "builtin_declare_namespace" =
+  print_builtins [{|
+    declare namespace ns {
+      declare export const bar1: number;
+      declare const bar2: boolean;
+      declare var bar3: boolean;
+      declare function f(): string;
+      declare function f(): number;
+      declare type Baz = string;
+      enum B {
+        C,
+        D,
+      }
+      if (true) {} // unsupported
+      declare module.exports: {foo: string}; // unsupported
+      import React from 'react'; // unsupported
+    }
+  |}];
+  [%expect {|
+    Local defs:
+    0. Variable {id_loc = [2:23-27]; name = "bar1"; def = (Annot (Number [2:29-35]))}
+    1. Variable {id_loc = [3:16-20]; name = "bar2"; def = (Annot (Boolean [3:22-29]))}
+    2. Variable {id_loc = [4:14-18]; name = "bar3"; def = (Annot (Boolean [4:20-27]))}
+    3. DeclareFun {id_loc = [5:19-20];
+         name = "f"; fn_loc = [5:20-30];
+         def =
+         FunSig {tparams = Mono; params = [];
+           rest_param = None; this_param = None;
+           return = (Annot (String [5:24-30]));
+           predicate = None; hook = NonHook};
+         tail =
+         [([6:19-20], [6:20-30],
+           FunSig {tparams = Mono; params = [];
+             rest_param = None; this_param = None;
+             return = (Annot (Number [6:24-30]));
+             predicate = None; hook = NonHook})
+           ]}
+    4. TypeAlias {id_loc = [7:15-18];
+         name = "Baz"; tparams = Mono;
+         body = (Annot (String [7:21-27]))}
+    5. EnumBinding {id_loc = [8:7-8];
+         name = "B"; rep = StringRep {truthy = true};
+         members = { "C" -> [9:4-5]; "D" -> [10:4-5] };
+         has_unknown_members = false}
+    6. NamespaceBinding {id_loc = [1:18-20];
+         name = "ns";
+         values =
+         { "B" -> ([8:7-8], (Ref LocalRef {ref_loc = [8:7-8]; index = 5}));
+           "bar1" -> ([2:23-27], (Ref LocalRef {ref_loc = [2:23-27]; index = 0}));
+           "bar2" -> ([3:16-20], (Ref LocalRef {ref_loc = [3:16-20]; index = 1}));
+           "bar3" -> ([4:14-18], (Ref LocalRef {ref_loc = [4:14-18]; index = 2}));
+           "f" -> ([5:19-20], (Ref LocalRef {ref_loc = [5:19-20]; index = 3})) };
+         types = { "Baz" -> ([7:15-18], (Ref LocalRef {ref_loc = [7:15-18]; index = 4})) }}
+
+    Builtin global value ns |}]
+
 let%expect_test "builtin_pattern" =
   print_builtins [{|
     const o = { p: 0 };
@@ -5606,7 +5953,8 @@ let%expect_test "builtin_pattern" =
     0. (PDef 0)
     1. PropP {id_loc = [2:7-8]; name = "p"; def = 0}
 
-    Builtin global o |}]
+    Builtin global value o
+    Builtin global value p |}]
 
 let%expect_test "this_param_1" =
   print_sig {|
@@ -5627,7 +5975,7 @@ let%expect_test "this_param_1" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = (Some (Annot (Mixed [1:27-32])));
            return = (Annot (Void [1:36-40]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          statics = {}} |}]
 
 let%expect_test "this_param_2" =
@@ -5659,7 +6007,7 @@ let%expect_test "this_param_2" =
                  params = []; rest_param = None;
                  this_param = (Some (Annot (Mixed [2:13-18])));
                  return = (Annot (Void [2:22-26]));
-                 predicate = None}} };
+                 predicate = None; hook = NonHook}} };
            own_props = {}}} |}]
 
 let%expect_test "this_param_3" =
@@ -5680,7 +6028,7 @@ let%expect_test "this_param_3" =
          FunSig {tparams = Mono; params = [];
            rest_param = None; this_param = (Some (Annot (Mixed [1:35-40])));
            return = (Annot (Void [1:44-48]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          tail = []} |}]
 
 let%expect_test "this_param_4" =
@@ -5712,7 +6060,8 @@ let%expect_test "this_param_4" =
                     params = []; rest_param = None;
                     this_param = (Some (Annot (Mixed [2:13-18])));
                     return = (Annot (Void [2:22-26]));
-                    predicate = None}),
+                    predicate = None;
+                    hook = NonHook}),
                  [])) };
            static_calls = []; calls = [];
            dict = None; static_dict = None}} |}]
@@ -5739,7 +6088,7 @@ let%expect_test "this_param_5" =
                  params = []; rest_param = None;
                  this_param = (Some (Annot (Mixed [1:26-31])));
                  return = (Annot (Void [1:36-40]));
-                 predicate = None}
+                 predicate = None; hook = NonHook}
                )))} |}]
 
 let%expect_test "this_param_6" =
@@ -5772,7 +6121,8 @@ let%expect_test "this_param_6" =
                            rest_param = None;
                            this_param = (Some (Annot (Mixed [1:30-35])));
                            return = (Annot (Void [1:40-44]));
-                           predicate = None}
+                           predicate = None;
+                           hook = NonHook}
                          ))),
                    Polarity.Neutral)) };
               proto = ObjAnnotImplicitProto})} |}]
@@ -5803,7 +6153,10 @@ let%expect_test "optional_indexed_access" =
                    (Annot
                       OptionalIndexedAccessNonMaybeType {
                         loc = [1:16-26];
-                        obj = (TyRef (Unqualified BuiltinRef {ref_loc = [1:16-19]; name = "Obj"}));
+                        obj =
+                        (TyRef
+                           (Unqualified
+                              BuiltinRef {ref_loc = [1:16-19]; type_ref = true; name = "Obj"}));
                         index = (Annot (SingletonString ([1:22-25], "a")))});
                    elem = (Annot (SingletonString ([1:27-30], "b")))});
               void_loc = [1:16-26]})}
@@ -5919,14 +6272,14 @@ let%expect_test "fun_shadow_declare_fun" =
            params = [FunParam {name = (Some "x"); t = (Annot (String [1:22-28]))}];
            rest_param = None; this_param = None;
            return = (Annot (Number [1:31-37]));
-           predicate = None};
+           predicate = None; hook = NonHook};
          tail =
          [([2:17-18], [2:18-37],
            FunSig {tparams = Mono;
              params = [FunParam {name = (Some "x"); t = (Annot (Number [2:22-28]))}];
              rest_param = None; this_param = None;
              return = (Annot (String [2:31-37]));
-             predicate = None})
+             predicate = None; hook = NonHook})
            ]} |}]
 
 let%expect_test "optional_tuple_elements" =
@@ -6237,7 +6590,9 @@ let%expect_test "component" =
            renders =
            (Annot
               (Renders ([1:15],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [1:15]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [1:15]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
 
   |}]
@@ -6286,7 +6641,9 @@ let%expect_test "component2" =
            renders =
            (Annot
               (Renders ([2:40],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [2:40]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [2:40]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
 
   |}]
@@ -6323,7 +6680,9 @@ let%expect_test "component3" =
            renders =
            (Annot
               (Renders ([1:19],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [1:19]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [1:19]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
     1. ComponentBinding {id_loc = [2:10-13];
          name = "Baz"; fn_loc = [2:0-69];
@@ -6335,7 +6694,9 @@ let%expect_test "component3" =
              ];
            rest_param =
            (Some ComponentRestParam {
-                   t = (TyRef (Unqualified BuiltinRef {ref_loc = [2:48-52]; name = "Rest"}))});
+                   t =
+                   (TyRef
+                      (Unqualified BuiltinRef {ref_loc = [2:48-52]; type_ref = true; name = "Rest"}))});
            renders =
            (Annot
               (Renders ([2:54-69], (TyRef (Unqualified LocalRef {ref_loc = [2:62-69]; index = 0})),
@@ -6408,7 +6769,9 @@ let%expect_test "component_5" =
            renders =
            (Annot
               (Renders ([1:23],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [1:23]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [1:23]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
     1. ComponentBinding {id_loc = [2:25-28];
          name = "Bar"; fn_loc = [2:15-31];
@@ -6419,7 +6782,9 @@ let%expect_test "component_5" =
            renders =
            (Annot
               (Renders ([2:31],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [2:31]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [2:31]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
 
   |}]
@@ -6491,7 +6856,9 @@ let%expect_test "declare_component" =
            renders =
            (Annot
               (Renders ([1:31],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [1:31]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [1:31]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}}
     1. ComponentBinding {id_loc = [2:33-36];
          name = "Bar"; fn_loc = [2:23-40];
@@ -6502,7 +6869,9 @@ let%expect_test "declare_component" =
            renders =
            (Annot
               (Renders ([2:39],
-                 (TyRef (Unqualified BuiltinRef {ref_loc = [2:39]; name = "React$Node"})),
+                 (TyRef
+                    (Unqualified
+                       BuiltinRef {ref_loc = [2:39]; type_ref = true; name = "React$Node"})),
                  Flow_ast.Type.Renders.Normal)))}} |}]
 
 let%expect_test "declare_component_disabled" =
@@ -6575,7 +6944,9 @@ let%expect_test "component_type" =
                  renders =
                  (Annot
                     (Renders ([4:28],
-                       (TyRef (Unqualified BuiltinRef {ref_loc = [4:28]; name = "React$Node"})),
+                       (TyRef
+                          (Unqualified
+                             BuiltinRef {ref_loc = [4:28]; type_ref = true; name = "React$Node"})),
                        Flow_ast.Type.Renders.Normal)))}
                )))} |}]
 

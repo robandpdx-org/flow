@@ -14,6 +14,8 @@ type t = {
   exact_by_default: bool;
   enable_enums: bool;
   enable_component_syntax: bool;
+  enable_ts_syntax: bool;
+  hooklike_functions: bool;
   casting_syntax: Options.CastingSyntax.t;
   enable_relay_integration: bool;
   relay_integration_module_prefix: string option;
@@ -48,12 +50,14 @@ let of_options options docblock locs_to_dirtify file =
     enable_relay_integration;
     relay_integration_module_prefix;
     locs_to_dirtify;
+    hooklike_functions = Options.hooklike_functions options;
     suppress_types = Options.suppress_types options;
     facebook_fbt = Options.facebook_fbt options;
     max_literal_len = Options.max_literal_length options;
     exact_by_default = Options.exact_by_default options;
     enable_enums = Options.enums options;
     enable_component_syntax = Options.typecheck_component_syntax_in_file options file;
+    enable_ts_syntax = Options.ts_syntax options;
     for_builtins = false;
     casting_syntax = Options.casting_syntax options;
   }
@@ -74,6 +78,8 @@ let builtin_options options =
     exact_by_default = Options.exact_by_default options;
     enable_enums = Options.enums options;
     enable_component_syntax = true;
+    enable_ts_syntax = false;
+    hooklike_functions = Options.hooklike_functions options;
     casting_syntax = Options.casting_syntax options;
     for_builtins = true;
     locs_to_dirtify = [];

@@ -66,12 +66,12 @@ class virtual ['a] t =
           t
         else
           EvalT (t'', dt', id')
-      | ThisClassT (r, t', i, n) ->
-        let t'' = self#type_ cx map_cx t' in
+      | ThisInstanceT (r, t', i, n) ->
+        let t'' = self#instance_type cx map_cx t' in
         if t'' == t' then
           t
         else
-          ThisClassT (r, t'', i, n)
+          ThisInstanceT (r, t'', i, n)
       | ThisTypeAppT (r, t1, t2, tlist_opt) ->
         let t1' = self#type_ cx map_cx t1 in
         let t2' = self#type_ cx map_cx t2 in
@@ -82,13 +82,13 @@ class virtual ['a] t =
           t
         else
           ThisTypeAppT (r, t1', t2', tlist_opt')
-      | TypeAppT { reason; use_op; type_; targs; use_desc } ->
+      | TypeAppT { reason; use_op; type_; targs; from_value; use_desc } ->
         let type_' = self#type_ cx map_cx type_ in
         let targs' = ListUtils.ident_map (self#type_ cx map_cx) targs in
         if type_ == type_' && targs == targs' then
           t
         else
-          TypeAppT { reason; use_op; type_ = type_'; targs = targs'; use_desc }
+          TypeAppT { reason; use_op; type_ = type_'; targs = targs'; from_value; use_desc }
       | ExactT (r, t') ->
         let t'' = self#type_ cx map_cx t' in
         if t'' == t' then
@@ -161,6 +161,12 @@ class virtual ['a] t =
               module_is_strict;
               module_available_platforms;
             }
+      | NamespaceT namespace_t ->
+        let namespace_t' = self#namespace_type cx map_cx namespace_t in
+        if namespace_t' == namespace_t then
+          t
+        else
+          NamespaceT namespace_t'
       | InternalT (ExtendsT (r, t1, t2)) ->
         let t1' = self#type_ cx map_cx t1 in
         let t2' = self#type_ cx map_cx t2 in
@@ -169,6 +175,7 @@ class virtual ['a] t =
         else
           InternalT (ExtendsT (r, t1', t2'))
       | InternalT (ChoiceKitT _) -> t
+      | InternalT (EnforceUnionOptimized _) -> t
       | CustomFunT (r, kind) ->
         let kind' = self#custom_fun_kind cx map_cx kind in
         if kind' == kind then
@@ -236,12 +243,12 @@ class virtual ['a] t =
           SpreadArg t'
 
     method enum cx map_cx e =
-      let { enum_id; members; representation_t; has_unknown_members } = e in
+      let { enum_name; enum_id; members; representation_t; has_unknown_members } = e in
       let representation_t' = self#type_ cx map_cx representation_t in
       if representation_t' = representation_t then
         e
       else
-        { enum_id; members; representation_t = representation_t'; has_unknown_members }
+        { enum_name; enum_id; members; representation_t = representation_t'; has_unknown_members }
 
     method def_type cx map_cx t =
       match t with
@@ -293,15 +300,12 @@ class virtual ['a] t =
           t
         else
           EnumObjectT enum'
-      | InstanceT { static; super; implements; inst } ->
-        let static' = self#type_ cx map_cx static in
-        let super' = self#type_ cx map_cx super in
-        let implements' = ListUtils.ident_map (self#type_ cx map_cx) implements in
-        let inst' = self#inst_type cx map_cx inst in
-        if static' == static && super' == super && implements' == implements && inst' == inst then
+      | InstanceT instance_t ->
+        let instance_t' = self#instance_type cx map_cx instance_t in
+        if instance_t' == instance_t then
           t
         else
-          InstanceT { static = static'; super = super'; implements = implements'; inst = inst' }
+          InstanceT instance_t'
       | NumericStrKeyT _
       | SingletonStrT _
       | SingletonNumT _
@@ -361,18 +365,33 @@ class virtual ['a] t =
         else
           TypeDestructorT (u, r, d')
 
-    method export_types cx map_cx ({ exports_tmap; cjs_export; has_every_named_export } as t) =
-      let exports_tmap' = self#exports cx map_cx exports_tmap in
+    method export_types
+        cx
+        map_cx
+        ({ value_exports_tmap; type_exports_tmap; cjs_export; has_every_named_export } as t) =
+      let value_exports_tmap' = self#exports cx map_cx value_exports_tmap in
+      let type_exports_tmap' = self#exports cx map_cx type_exports_tmap in
       let cjs_export' = OptionUtils.ident_map (self#type_ cx map_cx) cjs_export in
-      if exports_tmap == exports_tmap' && cjs_export == cjs_export' then
+      if
+        value_exports_tmap == value_exports_tmap'
+        && type_exports_tmap == type_exports_tmap'
+        && cjs_export == cjs_export'
+      then
         t
       else
-        { exports_tmap = exports_tmap'; cjs_export = cjs_export'; has_every_named_export }
+        {
+          value_exports_tmap = value_exports_tmap';
+          type_exports_tmap = type_exports_tmap';
+          cjs_export = cjs_export';
+          has_every_named_export;
+        }
 
     method fun_type
         cx
         map_cx
-        ({ this_t = (this, subtyping); params; rest_param; return_t; predicate; def_reason } as t) =
+        ( { this_t = (this, subtyping); params; rest_param; return_t; predicate; def_reason; hook }
+        as t
+        ) =
       let this' = self#type_ cx map_cx this in
       let params' =
         ListUtils.ident_map
@@ -410,7 +429,7 @@ class virtual ['a] t =
         let params = params' in
         let rest_param = rest_param' in
         let predicate = predicate' in
-        { this_t; params; rest_param; return_t; predicate; def_reason }
+        { this_t; params; rest_param; return_t; predicate; def_reason; hook }
 
     method inst_type cx map_cx i =
       let {
@@ -480,6 +499,17 @@ class virtual ['a] t =
           class_private_static_methods = class_private_static_methods';
         }
 
+    method instance_type cx map_cx t =
+      let { static; super; implements; inst } = t in
+      let static' = self#type_ cx map_cx static in
+      let super' = self#type_ cx map_cx super in
+      let implements' = ListUtils.ident_map (self#type_ cx map_cx) implements in
+      let inst' = self#inst_type cx map_cx inst in
+      if static' == static && super' == super && implements' == implements && inst' == inst then
+        t
+      else
+        { static = static'; super = super'; implements = implements'; inst = inst' }
+
     method type_param cx map_cx ({ reason; name; bound; polarity; default; is_this } as t) =
       let bound' = self#type_ cx map_cx bound in
       let default' = OptionUtils.ident_map (self#type_ cx map_cx) default in
@@ -514,6 +544,7 @@ class virtual ['a] t =
           ReactCheckComponentConfig map'
       | ReactCheckComponentRef
       | ReactDRO _
+      | MakeHooklike
       | NonMaybeType
       | PropertyType _
       | OptionalIndexedAccessResultType _
@@ -745,13 +776,13 @@ class virtual ['a] t =
           TypeGuardBased { param_name; type_guard = t' }
 
     method private predicate_maps cx map_cx predicate =
-      let (reason, pmap, nmap) = predicate in
+      let (reason, (lazy (pmap, nmap))) = predicate in
       let pmap' = Key_map.ident_map (self#predicate cx map_cx) pmap in
       let nmap' = Key_map.ident_map (self#predicate cx map_cx) nmap in
       if pmap == pmap' && nmap == nmap' then
         predicate
       else
-        (reason, pmap', nmap')
+        (reason, lazy (pmap', nmap'))
 
     method virtual exports : Context.t -> 'a -> Type.Exports.id -> Type.Exports.id
 
@@ -799,6 +830,15 @@ class virtual ['a] t =
           call_t = call_t';
           reachable_targs = reachable_targs';
         }
+
+    method namespace_type cx map_cx t =
+      let { values_type; types_tmap } = t in
+      let values_type' = self#type_ cx map_cx values_type in
+      let types_tmap' = self#props cx map_cx types_tmap in
+      if values_type' == values_type && types_tmap' == types_tmap then
+        t
+      else
+        { values_type = values_type'; types_tmap = types_tmap' }
 
     method virtual call_prop : Context.t -> 'a -> int -> int
 
@@ -904,7 +944,8 @@ class virtual ['a] t =
       | VoidP
       | ArrP
       | PropNonMaybeP _
-      | PropExistsP _ ->
+      | PropExistsP _
+      | NoP ->
         p
       | LatentP ((lazy (use_op, loc, t, targs, argts)), i) ->
         let t' = self#type_ cx map_cx t in

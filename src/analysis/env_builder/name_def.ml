@@ -18,7 +18,7 @@ module Destructure : sig
     (ALoc.t, ALoc.t) Ast.Pattern.t -> (ALoc.t, ALoc.t) Ast.Type.annotation option
 
   val fold_pattern :
-    record_identifier:(ALoc.t -> ALoc.t Reason.virtual_reason -> binding -> 'a) ->
+    record_identifier:(ALoc.t -> string -> binding -> 'a) ->
     record_destructuring_intermediate:(ALoc.t -> binding -> unit) ->
     visit_default_expression:(hints:ast_hints -> (ALoc.t, ALoc.t) Ast.Expression.t -> unit) ->
     join:('a -> 'a -> 'a) ->
@@ -28,7 +28,7 @@ module Destructure : sig
     'a
 
   val pattern :
-    record_identifier:(ALoc.t -> ALoc.t Reason.virtual_reason -> binding -> unit) ->
+    record_identifier:(ALoc.t -> string -> binding -> unit) ->
     record_destructuring_intermediate:(ALoc.t -> binding -> unit) ->
     visit_default_expression:(hints:ast_hints -> (ALoc.t, ALoc.t) Ast.Expression.t -> unit) ->
     binding ->
@@ -83,7 +83,7 @@ end = struct
     | Property.BigIntLiteral _ -> (acc, xs, false)
 
   let identifier ~record_identifier acc (name_loc, { Ast.Identifier.name; _ }) =
-    record_identifier name_loc (mk_reason (RIdentifier (OrdinaryName name)) name_loc) acc
+    record_identifier name_loc name acc
 
   let rec fold_pattern
       ~record_identifier
@@ -585,8 +585,9 @@ let expression_is_definitely_synthesizable ~autocomplete_hooks =
     | Ast.Expression.TemplateLiteral _
     | Ast.Expression.This _
     | Ast.Expression.TypeCast _
+    | Ast.Expression.AsConstExpression _
     | Ast.Expression.AsExpression _
-    | Ast.Expression.TSTypeCast _
+    | Ast.Expression.TSSatisfies _
     | Ast.Expression.Update _
     | Ast.Expression.Yield _ ->
       true
@@ -644,8 +645,6 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
 
     val mutable return_hint_stack : ast_hints list = []
 
-    val mutable in_declare_module : bool = false
-
     method add_tparam loc name = tparams <- ALocMap.add loc name tparams
 
     method record_hint loc hint =
@@ -666,8 +665,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       this#add_binding (Env_api.PatternLoc, loc) (mk_reason RDestructuring loc) (Binding binding)
 
     method add_destructure_bindings root pattern =
-      let record_identifier loc reason binding =
-        this#add_ordinary_binding loc reason (Binding binding)
+      let record_identifier loc name binding =
+        let binding = this#mk_hooklike_if_necessary (Flow_ast_utils.hook_name name) binding in
+        this#add_ordinary_binding
+          loc
+          (mk_reason (RIdentifier (OrdinaryName name)) loc)
+          (Binding binding)
       in
       Destructure.pattern
         ~record_identifier
@@ -675,6 +678,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
         ~visit_default_expression:(this#visit_expression ~cond:NonConditionalContext)
         (Root root)
         pattern
+
+    method mk_hooklike_if_necessary hooklike binding =
+      if hooklike then begin
+        Hooklike binding
+      end else
+        binding
 
     method private in_scope : 'a 'b. ('a -> 'b) -> scope_kind -> 'a -> 'b =
       fun f scope' node ->
@@ -927,6 +936,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                   ~var_assigned_to:(Some var_id)
                   ~statics
                   ~arrow
+                  ~hooklike:(Flow_ast_utils.hook_name name)
                   loc
                   func
               in
@@ -952,33 +962,32 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
     method! variable_declarator ~kind decl =
       let open Ast.Statement.VariableDeclaration.Declarator in
       let (_, { id; init }) = decl in
+      let concrete =
+        match (init, id) with
+        | ( Some (arr_loc, Ast.Expression.Array { Ast.Expression.Array.elements = []; _ }),
+            (_, Ast.Pattern.Identifier { Ast.Pattern.Identifier.name = (name_loc, _); _ })
+          ) ->
+          let { Provider_api.array_providers; _ } =
+            Base.Option.value_exn (Provider_api.providers_of_def env_info.Env_api.providers name_loc)
+          in
+          Some (EmptyArray { array_providers; arr_loc })
+        | ( Some
+              ( ( loc,
+                  Ast.Expression.Object ({ Ast.Expression.Object.properties = _ :: _; _ } as obj)
+                ) as init
+              ),
+            _
+          ) ->
+          let this_write_locs = obj_this_write_locs obj in
+          begin
+            match obj_properties_synthesizable ~this_write_locs obj with
+            | Unsynthesizable -> Some (Value { hints = []; expr = init })
+            | synthesizable -> Some (ObjectValue { obj_loc = loc; obj; synthesizable })
+          end
+        | (Some init, _) -> Some (Value { hints = []; expr = init })
+        | (None, _) -> None
+      in
       let (source, hints) =
-        let concrete =
-          match (init, id) with
-          | ( Some (arr_loc, Ast.Expression.Array { Ast.Expression.Array.elements = []; _ }),
-              (_, Ast.Pattern.Identifier { Ast.Pattern.Identifier.name = (name_loc, _); _ })
-            ) ->
-            let { Provider_api.array_providers; _ } =
-              Base.Option.value_exn
-                (Provider_api.providers_of_def env_info.Env_api.providers name_loc)
-            in
-            Some (EmptyArray { array_providers; arr_loc })
-          | ( Some
-                ( ( loc,
-                    Ast.Expression.Object ({ Ast.Expression.Object.properties = _ :: _; _ } as obj)
-                  ) as init
-                ),
-              _
-            ) ->
-            let this_write_locs = obj_this_write_locs obj in
-            begin
-              match obj_properties_synthesizable ~this_write_locs obj with
-              | Unsynthesizable -> Some (Value { hints = []; expr = init })
-              | synthesizable -> Some (ObjectValue { obj_loc = loc; obj; synthesizable })
-            end
-          | (Some init, _) -> Some (Value { hints = []; expr = init })
-          | (None, _) -> None
-        in
         match Destructure.type_of_pattern id with
         | Some annot ->
           ( Some
@@ -987,7 +996,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                    tparams_map = ALocMap.empty;
                    optional = false;
                    has_default_expression = false;
-                   react_deep_read_only = false;
+                   react_deep_read_only = None;
                    param_loc = None;
                    annot;
                    concrete;
@@ -1007,21 +1016,25 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
     method! declare_variable loc (decl : ('loc, 'loc) Ast.Statement.DeclareVariable.t) =
       let open Ast.Statement.DeclareVariable in
       let { id = (id_loc, { Ast.Identifier.name; _ }); annot; kind = _; comments = _ } = decl in
+      let hook_like = Flow_ast_utils.hook_name name in
       this#add_ordinary_binding
         id_loc
         (mk_reason (RIdentifier (OrdinaryName name)) id_loc)
         (Binding
-           (Root
-              (Annotation
-                 {
-                   tparams_map = ALocMap.empty;
-                   optional = false;
-                   has_default_expression = false;
-                   react_deep_read_only = false;
-                   param_loc = None;
-                   annot;
-                   concrete = None;
-                 }
+           (this#mk_hooklike_if_necessary
+              hook_like
+              (Root
+                 (Annotation
+                    {
+                      tparams_map = ALocMap.empty;
+                      optional = false;
+                      has_default_expression = false;
+                      react_deep_read_only = None;
+                      param_loc = None;
+                      annot;
+                      concrete = None;
+                    }
+                 )
               )
            )
         );
@@ -1041,7 +1054,8 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
 
     method! function_param (loc, _) = fail loc "Should be visited by visit_function_param"
 
-    method private visit_function_param ~hints (param : ('loc, 'loc) Ast.Function.Param.t) =
+    method private visit_function_param ~hints ~is_hook (param : ('loc, 'loc) Ast.Function.Param.t)
+        =
       let open Ast.Function.Param in
       let (loc, { argument; default = default_expression }) = param in
       let optional =
@@ -1066,7 +1080,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
               tparams_map = tparams;
               optional;
               has_default_expression = Base.Option.is_some default_expression;
-              react_deep_read_only = false;
+              react_deep_read_only =
+                ( if is_hook then
+                  Some Hook
+                else
+                  None
+                );
               param_loc = Some param_loc;
               annot;
               concrete = None;
@@ -1087,8 +1106,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           this#record_hint param_loc hints;
           Contextual { reason; hints; optional; default_expression }
       in
-      let record_identifier loc reason binding =
-        this#add_ordinary_binding loc reason (Binding binding);
+      let record_identifier loc name binding =
+        let binding = this#mk_hooklike_if_necessary (Flow_ast_utils.hook_name name) binding in
+        this#add_ordinary_binding
+          loc
+          (mk_reason (RIdentifier (OrdinaryName name)) loc)
+          (Binding binding);
         true
       in
       if
@@ -1111,7 +1134,8 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           (Binding (Root source));
       ignore @@ super#function_param (loc, { argument; default = None })
 
-    method private visit_function_rest_param ~hints (expr : ('loc, 'loc) Ast.Function.RestParam.t) =
+    method private visit_function_rest_param
+        ~hints ~is_hook (expr : ('loc, 'loc) Ast.Function.RestParam.t) =
       let open Ast.Function.RestParam in
       let (_, { argument; comments = _ }) = expr in
       let (param_loc, _) = argument in
@@ -1123,7 +1147,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
               tparams_map = tparams;
               optional = false;
               has_default_expression = false;
-              react_deep_read_only = false;
+              react_deep_read_only =
+                ( if is_hook then
+                  Some Hook
+                else
+                  None
+                );
               param_loc = Some param_loc;
               annot;
               concrete = None;
@@ -1159,7 +1188,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                    tparams_map = tparams;
                    optional = false;
                    has_default_expression = false;
-                   react_deep_read_only = false;
+                   react_deep_read_only = None;
                    param_loc = None;
                    annot;
                    concrete = None;
@@ -1187,7 +1216,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                 tparams_map = ALocMap.empty;
                 optional = false;
                 has_default_expression = false;
-                react_deep_read_only = false;
+                react_deep_read_only = None;
                 param_loc = None;
                 annot;
                 concrete = None;
@@ -1287,7 +1316,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
               tparams_map = tparams;
               optional;
               has_default_expression = Base.Option.is_some default_expression;
-              react_deep_read_only = true;
+              react_deep_read_only = Some Comp;
               param_loc = Some param_loc;
               annot;
               concrete = None;
@@ -1307,8 +1336,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           in
           UnannotatedParameter reason
       in
-      let record_identifier loc reason binding =
-        this#add_ordinary_binding loc reason (Binding binding);
+      let record_identifier loc name binding =
+        let binding = this#mk_hooklike_if_necessary (Flow_ast_utils.hook_name name) binding in
+        this#add_ordinary_binding
+          loc
+          (mk_reason (RIdentifier (OrdinaryName name)) loc)
+          (Binding binding);
         true
       in
       if
@@ -1350,7 +1383,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
               tparams_map = tparams;
               optional;
               has_default_expression = false;
-              react_deep_read_only = true;
+              react_deep_read_only = Some Comp;
               param_loc = Some param_loc;
               annot;
               concrete = None;
@@ -1367,8 +1400,12 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           in
           UnannotatedParameter reason
       in
-      let record_identifier loc reason binding =
-        this#add_ordinary_binding loc reason (Binding binding);
+      let record_identifier loc name binding =
+        let binding = this#mk_hooklike_if_necessary (Flow_ast_utils.hook_name name) binding in
+        this#add_ordinary_binding
+          loc
+          (mk_reason (RIdentifier (OrdinaryName name)) loc)
+          (Binding binding);
         true
       in
       if
@@ -1392,7 +1429,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       ignore @@ super#component_rest_param param
 
     method visit_function_expr
-        ~func_hints ~has_this_def ~var_assigned_to ~statics ~arrow function_loc expr =
+        ~func_hints ~has_this_def ~var_assigned_to ~statics ~arrow ~hooklike function_loc expr =
       let {
         Ast.Function.id;
         async;
@@ -1420,24 +1457,25 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           this#visit_function ~scope_kind ~func_hints expr;
           (match var_assigned_to with
           | Some (name_loc, { Ast.Identifier.name; comments = _ }) ->
+            let binding =
+              Root
+                (FunctionValue
+                   {
+                     hints = func_hints;
+                     synthesizable_from_annotation = func_is_synthesizable_from_annotation expr;
+                     function_loc;
+                     function_ = expr;
+                     statics;
+                     arrow;
+                     tparams_map = tparams;
+                   }
+                )
+            in
+            let binding = this#mk_hooklike_if_necessary hooklike binding in
             this#add_ordinary_binding
               name_loc
               (mk_reason (RIdentifier (OrdinaryName name)) name_loc)
-              (Binding
-                 (Root
-                    (FunctionValue
-                       {
-                         hints = func_hints;
-                         synthesizable_from_annotation = func_is_synthesizable_from_annotation expr;
-                         function_loc;
-                         function_ = expr;
-                         statics;
-                         arrow;
-                         tparams_map = tparams;
-                       }
-                    )
-                 )
-              )
+              (Binding binding)
           | None -> ());
           let add_def binding_loc =
             let reason =
@@ -1475,6 +1513,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
         ~var_assigned_to:None
         ~statics:SMap.empty
         ~arrow:false
+        ~hooklike:false
         loc
         expr;
       expr
@@ -1560,6 +1599,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
             body;
             async;
             generator;
+            hook = is_hook;
             predicate;
             return;
             tparams = fun_tparams;
@@ -1575,11 +1615,13 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           Base.List.iteri
             ~f:(fun i ->
               this#visit_function_param
+                ~is_hook
                 ~hints:(decompose_hints (Decomp_FuncParam (param_str_list, i, pred)) func_hints))
             params_list;
           Base.Option.iter
             ~f:
               (this#visit_function_rest_param
+                 ~is_hook
                  ~hints:(decompose_hints (Decomp_FuncRest (param_str_list, pred)) func_hints)
               )
             rest;
@@ -1651,22 +1693,18 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       this#in_new_tparams_env (fun () ->
           let old_stack = class_stack in
           class_stack <- loc :: class_stack;
-          let class_implicit_this_tparam =
+          let () =
             this#in_scope
               (fun () ->
                 Flow_ast_visitor.run_opt this#class_identifier id;
                 Flow_ast_visitor.run_opt this#type_params class_tparams;
                 let this_tparam_loc = Base.Option.value_map ~default:loc ~f:fst id in
-                let class_tparams_map = tparams in
                 this#add_tparam this_tparam_loc "this";
                 ignore @@ this#class_body body;
                 Flow_ast_visitor.run_opt (Flow_ast_mapper.map_loc this#class_extends) extends;
                 Flow_ast_visitor.run_opt this#class_implements implements;
                 Flow_ast_visitor.run_list this#class_decorator class_decorators;
-                {
-                  tparams_map = class_tparams_map;
-                  class_tparams_loc = Base.Option.map ~f:fst class_tparams;
-                })
+                ())
               Ordinary
               ()
           in
@@ -1717,27 +1755,13 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
               this#add_ordinary_binding
                 id_loc
                 reason
-                (Class
-                   {
-                     class_loc = loc;
-                     class_implicit_this_tparam;
-                     class_ = expr;
-                     this_super_write_locs;
-                   }
-                )
+                (Class { class_loc = loc; class_ = expr; this_super_write_locs })
             | None ->
               let reason = mk_reason (RType (OrdinaryName "<<anonymous class>>")) loc in
               this#add_ordinary_binding
                 loc
                 reason
-                (Class
-                   {
-                     class_loc = loc;
-                     class_implicit_this_tparam;
-                     class_ = expr;
-                     this_super_write_locs;
-                   }
-                )
+                (Class { class_loc = loc; class_ = expr; this_super_write_locs })
           end;
           expr
       )
@@ -1801,22 +1825,27 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
         decl
       | None ->
         let open Ast.Statement.DeclareFunction in
-        let { id = (id_loc, _); annot; predicate = _; comments = _ } = decl in
+        let { id = (id_loc, { Ast.Identifier.name; _ }); annot; predicate = _; comments = _ } =
+          decl
+        in
         this#add_ordinary_binding
           id_loc
           (func_reason ~async:false ~generator:false loc)
           (Binding
-             (Root
-                (Annotation
-                   {
-                     tparams_map = ALocMap.empty;
-                     optional = false;
-                     has_default_expression = false;
-                     react_deep_read_only = false;
-                     param_loc = None;
-                     annot;
-                     concrete = None;
-                   }
+             (this#mk_hooklike_if_necessary
+                (Flow_ast_utils.hook_name name)
+                (Root
+                   (Annotation
+                      {
+                        tparams_map = ALocMap.empty;
+                        optional = false;
+                        has_default_expression = false;
+                        react_deep_read_only = None;
+                        param_loc = None;
+                        annot;
+                        concrete = None;
+                      }
+                   )
                 )
              )
           );
@@ -2014,7 +2043,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                   tparams_map = ALocMap.empty;
                   optional = false;
                   has_default_expression = false;
-                  react_deep_read_only = false;
+                  react_deep_read_only = None;
                   param_loc = None;
                   annot;
                   concrete = Some forof;
@@ -2050,7 +2079,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                   tparams_map = ALocMap.empty;
                   optional = false;
                   has_default_expression = false;
-                  react_deep_read_only = false;
+                  react_deep_read_only = None;
                   param_loc = None;
                   annot;
                   concrete = Some forin;
@@ -2139,25 +2168,25 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       this#in_new_tparams_env (fun () -> super#interface loc interface)
 
     method! declare_module loc (m : ('loc, 'loc) Ast.Statement.DeclareModule.t) =
-      let { Ast.Statement.DeclareModule.id; _ } = m in
-      let (name_loc, name) =
-        match id with
-        | Ast.Statement.DeclareModule.Identifier
-            (name_loc, { Ast.Identifier.name = value; comments = _ })
-        | Ast.Statement.DeclareModule.Literal (name_loc, { Ast.StringLiteral.value; _ }) ->
-          (name_loc, value)
+      this#in_scope (super#declare_module loc) DeclareModule m
+
+    method! declare_namespace loc (n : ('loc, 'loc) Ast.Statement.DeclareNamespace.t) =
+      let {
+        Ast.Statement.DeclareNamespace.id = (name_loc, { Ast.Identifier.name; comments = _ });
+        _;
+      } =
+        n
       in
-      let r = mk_reason (RModule (OrdinaryName name)) loc in
-      this#add_ordinary_binding name_loc r (DeclaredModule (loc, m));
-      in_declare_module <- true;
-      let ret = this#in_scope (super#declare_module loc) Ordinary m in
-      in_declare_module <- false;
-      ret
+      this#add_ordinary_binding
+        name_loc
+        (mk_reason (RNamespace name) name_loc)
+        (DeclaredNamespace (loc, n));
+      this#in_scope (super#declare_namespace loc) DeclareNamespace n
 
     method! enum_declaration loc (enum : ('loc, 'loc) Ast.Statement.EnumDeclaration.t) =
       let open Ast.Statement.EnumDeclaration in
       let { id = (name_loc, { Ast.Identifier.name; _ }); body; _ } = enum in
-      this#add_ordinary_binding name_loc (mk_reason (REnum name) name_loc) (Enum (loc, body));
+      this#add_ordinary_binding name_loc (mk_reason (REnum name) name_loc) (Enum (loc, name, body));
       super#enum_declaration loc enum
 
     method! import_declaration loc (decl : ('loc, 'loc) Ast.Statement.ImportDeclaration.t) =
@@ -2196,8 +2225,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                      import_kind;
                      source;
                      source_loc;
-                     import = Named { kind; remote; remote_loc = rem_id_loc; local = name };
-                     declare_module = in_declare_module;
+                     import = Named { kind; remote; local = name };
                    }
                 ))
             specifiers
@@ -2214,15 +2242,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           this#add_ordinary_binding
             id_loc
             import_reason
-            (Import
-               {
-                 import_kind;
-                 source;
-                 source_loc;
-                 import = Namespace;
-                 declare_module = in_declare_module;
-               }
-            )
+            (Import { import_kind; source; source_loc; import = Namespace name })
         | None -> ()
       end;
       Base.Option.iter
@@ -2235,15 +2255,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           this#add_ordinary_binding
             id_loc
             import_reason
-            (Import
-               {
-                 import_kind;
-                 source;
-                 source_loc;
-                 import = Default name;
-                 declare_module = in_declare_module;
-               }
-            ))
+            (Import { import_kind; source; source_loc; import = Default name }))
         default;
       super#import_declaration loc decl
 
@@ -2366,26 +2378,26 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       in
       let param_str_list = Base.List.init (List.length arguments) ~f:(fun _ -> None) in
       Base.List.iteri arguments ~f:(fun i arg ->
-          let hints =
-            call_argumemts_hints
-            |> decompose_hints
-                 (Instantiate_Callee
-                    {
-                      Hint.reason = call_reason;
-                      return_hints = lazy return_hints;
-                      targs = lazy targs;
-                      arg_list = lazy arg_list;
-                      arg_index = i;
-                    }
-                 )
-            |> decompose_hints (Decomp_FuncParam (param_str_list, i, None))
-          in
           match arg with
           | Ast.Expression.Expression expr ->
+            let hints =
+              call_argumemts_hints
+              |> decompose_hints
+                   (Instantiate_Callee
+                      {
+                        Hint.reason = call_reason;
+                        return_hints = lazy return_hints;
+                        targs = lazy targs;
+                        arg_list = lazy arg_list;
+                        arg_index = i;
+                      }
+                   )
+              |> decompose_hints (Decomp_FuncParam (param_str_list, i, None))
+            in
             this#visit_expression ~hints ~cond:NonConditionalContext expr
           | Ast.Expression.Spread (_, spread) ->
             this#visit_expression
-              ~hints
+              ~hints:[]
               ~cond:NonConditionalContext
               spread.Ast.Expression.SpreadElement.argument
       )
@@ -2759,6 +2771,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
           ~var_assigned_to:None
           ~statics:SMap.empty
           ~arrow:false
+          ~hooklike:false
           loc
           x
       | Ast.Expression.Object expr -> this#visit_object_expression ~object_hints:hints expr
@@ -2794,7 +2807,8 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       | Ast.Expression.This _
       | Ast.Expression.TypeCast _
       | Ast.Expression.AsExpression _
-      | Ast.Expression.TSTypeCast _
+      | Ast.Expression.AsConstExpression _
+      | Ast.Expression.TSSatisfies _
       | Ast.Expression.Update _
       | Ast.Expression.Yield _ ->
         ignore @@ super#expression exp
@@ -2992,6 +3006,7 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
                 ~var_assigned_to:None
                 ~statics:SMap.empty
                 ~arrow:false
+                ~hooklike:false
                 loc
                 fn;
               ())
@@ -3017,12 +3032,6 @@ class def_finder ~autocomplete_hooks env_info toplevel_scope =
       res
   end
 
-let find_defs ~autocomplete_hooks env_info toplevel_scope_kind file ast =
+let find_defs ~autocomplete_hooks env_info toplevel_scope_kind ast =
   let finder = new def_finder ~autocomplete_hooks env_info toplevel_scope_kind in
-  let { Env_api.cjs_exports_state; _ } = env_info in
-  let loc = { Loc.none with Loc.source = Some file } |> ALoc.of_loc in
-  finder#add_binding
-    (Env_api.CJSModuleExportsLoc, loc)
-    (mk_reason RExports loc)
-    (CJSModuleExportsType cjs_exports_state);
   finder#eval finder#program ast

@@ -20,6 +20,8 @@ type scope_kind =
   | Generator (* generator function *)
   | AsyncGenerator (* async generator function *)
   | Module (* module scope *)
+  | DeclareModule (* module scope *)
+  | DeclareNamespace (* namespace scope *)
   | Global (* global scope *)
   | Ctor (* constructor function *)
   | ComponentBody (* component syntax *)
@@ -80,20 +82,26 @@ type object_synth_kind =
   | MissingMemberAnnots of { locs: object_missing_annot Nel.t }
   | Unsynthesizable
 
+type dro_annot =
+  | Hook
+  | Comp
+
+type value = {
+  hints: ast_hints;
+  expr: (ALoc.t, ALoc.t) Ast.Expression.t;
+}
+
 type root =
   | Annotation of {
       tparams_map: tparams_map;
       optional: bool;
       has_default_expression: bool;
-      react_deep_read_only: bool;
+      react_deep_read_only: dro_annot option;
       param_loc: ALoc.t option;
       annot: (ALoc.t, ALoc.t) Ast.Type.annotation;
       concrete: root option;
     }
-  | Value of {
-      hints: ast_hints;
-      expr: (ALoc.t, ALoc.t) Ast.Expression.t;
-    }
+  | Value of value
   | FunctionValue of {
       hints: ast_hints;
       synthesizable_from_annotation: function_synth_kind;
@@ -145,6 +153,7 @@ type selector =
 
 type binding =
   | Root of root
+  | Hooklike of binding
   | Select of {
       selector: selector;
       parent: ALoc.t * binding;
@@ -154,21 +163,15 @@ type import =
   | Named of {
       kind: Ast.Statement.ImportDeclaration.import_kind option;
       remote: string;
-      remote_loc: ALoc.t;
       local: string;
     }
-  | Namespace
+  | Namespace of string
   | Default of string
 
 type generator_annot = {
   tparams_map: tparams_map;
   return_annot: (ALoc.t, ALoc.t) Ast.Type.annotation;
   async: bool;
-}
-
-type class_implicit_this_tparam = {
-  tparams_map: tparams_map;
-  class_tparams_loc: ALoc.t option;
 }
 
 type expression_def = {
@@ -212,7 +215,6 @@ type def =
       component: (ALoc.t, ALoc.t) Ast.Statement.ComponentDeclaration.t;
     }
   | Class of {
-      class_implicit_this_tparam: class_implicit_this_tparam;
       class_: (ALoc.t, ALoc.t) Ast.Class.t;
       class_loc: ALoc.t;
       (* A set of this and super write locations that can be resolved by resolving the class. *)
@@ -228,17 +230,15 @@ type def =
       tparam: (ALoc.t, ALoc.t) Ast.Type.TypeParam.t;
     }
   | Interface of ALoc.t * (ALoc.t, ALoc.t) Ast.Statement.Interface.t
-  | Enum of ALoc.t * ALoc.t Ast.Statement.EnumDeclaration.body
+  | Enum of ALoc.t * string * ALoc.t Ast.Statement.EnumDeclaration.body
   | Import of {
       import_kind: Ast.Statement.ImportDeclaration.import_kind;
       import: import;
       source: string;
       source_loc: ALoc.t;
-      declare_module: bool;
     }
   | GeneratorNext of generator_annot option
-  | DeclaredModule of ALoc.t * (ALoc.t, ALoc.t) Ast.Statement.DeclareModule.t
-  | CJSModuleExportsType of Env_api.cjs_exports_state
+  | DeclaredNamespace of ALoc.t * (ALoc.t, ALoc.t) Ast.Statement.DeclareNamespace.t
   | MissingThisAnnot
 
 module Print = struct
@@ -266,6 +266,7 @@ module Print = struct
 
   let rec string_of_binding = function
     | Root r -> string_of_root r
+    | Hooklike binding -> spf "(%s)<as hooklike>" (string_of_binding binding)
     | Select { selector; parent = (_, binding); _ } ->
       spf "(%s)%s" (string_of_binding binding) (string_of_selector selector)
 
@@ -277,9 +278,9 @@ module Print = struct
     | ImportValue -> ""
 
   let string_of_import = function
-    | Named { kind; remote; local = _; remote_loc = _ } ->
+    | Named { kind; remote; local = _ } ->
       spf "%s%s" (Base.Option.value_map ~f:string_of_import_kind ~default:"" kind) remote
-    | Namespace -> "namespace"
+    | Namespace _ -> "namespace"
     | Default _ -> "default"
 
   let rec on_hint = function
@@ -337,13 +338,7 @@ module Print = struct
     | DeclaredComponent
         (_, { Ast.Statement.DeclareComponent.id = (_, { Ast.Identifier.name; _ }); _ }) ->
       spf "declared component %s" name
-    | Class
-        {
-          class_ = { Ast.Class.id; _ };
-          class_implicit_this_tparam = _;
-          class_loc = _;
-          this_super_write_locs = _;
-        } ->
+    | Class { class_ = { Ast.Class.id; _ }; class_loc = _; this_super_write_locs = _ } ->
       spf
         "class %s"
         (Base.Option.value_map
@@ -356,12 +351,13 @@ module Print = struct
     | OpaqueType (_, { Ast.Statement.OpaqueType.id = (loc, _); _ }) ->
       spf "opaque %s" (ALoc.debug_to_string loc)
     | TypeParam { tparam = (loc, _); _ } -> spf "tparam %s" (ALoc.debug_to_string loc)
-    | Enum (loc, _) -> spf "enum %s" (ALoc.debug_to_string loc)
+    | Enum (loc, name, _) -> spf "enum %s %s" name (ALoc.debug_to_string loc)
     | Interface _ -> "interface"
-    | DeclaredModule _ -> "declare module"
-    | CJSModuleExportsType _ -> "module.exports"
     | GeneratorNext _ -> "next"
-    | Import { import_kind; source; import; source_loc = _; declare_module = _ } ->
+    | DeclaredNamespace
+        (_, { Ast.Statement.DeclareNamespace.id = (loc, { Ast.Identifier.name; _ }); _ }) ->
+      spf "declare namespace %s %s" name (ALoc.debug_to_string loc)
+    | Import { import_kind; source; import; source_loc = _ } ->
       spf "import %s%s from %s" (string_of_import_kind import_kind) (string_of_import import) source
     | MissingThisAnnot -> "this (missing)"
 end

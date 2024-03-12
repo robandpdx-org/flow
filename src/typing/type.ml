@@ -77,12 +77,13 @@ module rec TypeTerm : sig
         reason: reason;
         name: Subst_name.t;
         bound: t;
+        no_infer: bool;
         id: Generic.id;
       }
-    (* this-abstracted class. If `is_this` is true, then this literally comes from
+    (* this-abstracted instance. If `is_this` is true, then this literally comes from
        `this` as an annotation or expression, and should be fixed to an internal
        view of the class, which is a generic whose upper bound is the class. *)
-    | ThisClassT of reason * t * (* is_this *) bool * Subst_name.t
+    | ThisInstanceT of reason * instance_t * (* is_this *) bool * Subst_name.t
     (* this instantiation *)
     | ThisTypeAppT of reason * t * t * t list option
     (* type application *)
@@ -91,6 +92,7 @@ module rec TypeTerm : sig
         use_op: use_op;
         type_: t;
         targs: t list;
+        from_value: bool;
         use_desc: bool;
       }
     (* exact *)
@@ -171,6 +173,8 @@ module rec TypeTerm : sig
     | OpaqueT of reason * opaquetype
     (* Stores exports (and potentially other metadata) for a module *)
     | ModuleT of moduletype
+    (* Stores both values and types in the same namespace*)
+    | NamespaceT of namespace_type
     (* Here's to the crazy ones. The misfits. The rebels. The troublemakers.
        The round pegs in the square holes. **)
     (* types that should never appear in signatures *)
@@ -197,12 +201,7 @@ module rec TypeTerm : sig
     (* type of a class *)
     | ClassT of t
     (* type of an instance of a class *)
-    | InstanceT of {
-        static: t;
-        super: t;
-        implements: t list;
-        inst: insttype;
-      }
+    | InstanceT of instance_t
     (* singleton string, matches exactly a given string literal *)
     (* TODO SingletonStrT should not include internal names *)
     | SingletonStrT of name
@@ -304,6 +303,7 @@ module rec TypeTerm : sig
     | TypeDestructorT of use_op * reason * destructor
 
   and enum_t = {
+    enum_name: string;
     enum_id: ALoc.id;
     members: ALoc.t SMap.t;
     representation_t: t;
@@ -315,6 +315,8 @@ module rec TypeTerm : sig
     | ChoiceKitT of reason * choice_tool
     (* util for deciding subclassing relations *)
     | ExtendsT of reason * t * t
+    (* $Flow$EnforceOptimized *)
+    | EnforceUnionOptimized of reason
 
   and 'loc virtual_root_use_op =
     | ObjectSpread of { op: 'loc virtual_reason }
@@ -584,10 +586,31 @@ module rec TypeTerm : sig
      * fields when the InstanceT ~> SetPrivatePropT constraint is processsed *)
     | SetPrivatePropT of
         use_op * reason * string * set_mode * class_binding list * bool * write_ctx * t * t option
-    | GetPropT of use_op * reason * ident option * propref * tvar
+    | GetTypeFromNamespaceT of {
+        use_op: use_op;
+        reason: reason;
+        prop_ref: reason * name;
+        tout: tvar;
+      }
+    | GetPropT of {
+        use_op: use_op;
+        reason: reason;
+        id: ident option;
+        from_annot: bool;
+        propref: propref;
+        tout: tvar;
+        hint: lazy_hint_t;
+      }
     (* The same comment on SetPrivatePropT applies here *)
     | GetPrivatePropT of use_op * reason * string * class_binding list * bool * tvar
-    | TestPropT of use_op * reason * ident * propref * tvar
+    | TestPropT of {
+        use_op: use_op;
+        reason: reason;
+        id: ident;
+        propref: propref;
+        tout: tvar;
+        hint: lazy_hint_t;
+      }
     (* SetElemT has a `tout` parameter to serve as a trigger for ordering
        operations. We only need this in one place: object literal initialization.
        In particular, a computed property in the object initializer users SetElemT
@@ -698,6 +721,8 @@ module rec TypeTerm : sig
     | SpecializeT of use_op * reason * reason * bool * t list option * t
     (* operation on this-abstracted classes *)
     | ThisSpecializeT of reason * t * cont
+    (* Convert a value to a type inference (e.g. ClassT -> InstanceT) *)
+    | ValueToTypeReferenceT of use_op * reason * type_t_kind * t_out
     (* variance check on polymorphic types *)
     | VarianceCheckT of reason * typeparam Subst_name.Map.t * t list * Polarity.t
     (* In TypeAppT (c, ts) ~> TypeAppT (c, ts) we need to check both cs against
@@ -705,12 +730,12 @@ module rec TypeTerm : sig
     | ConcretizeTypeAppsT of
         (* The use_op from our original TypeAppT ~> TypeAppT *)
         use_op
-        * (* The type args and reason for the TypeAppT that is currently the
+        * (* The type args, from_value, and reason for the TypeAppT that is currently the
            * lower bound *)
-        (t list * use_op * reason)
-        * (* The polymorphic type, its type args, and reason for the TypeAppT that
-           * is currently the upper bound. *)
-        (t * t list * use_op * reason)
+        (t list * bool * use_op * reason)
+        * (* The polymorphic type, its type args, from_value from TypeApp,
+           * and reason for the TypeAppT that is currently the upper bound. *)
+        (t * t list * bool * use_op * reason)
         * (* A boolean which answers the question: Is the TypeAppT that is
            * currently our lower bound in fact our upper bound in the original
            * TypeAppT ~> TypeAppT? If the answer is yes then we need to flip our
@@ -749,16 +774,6 @@ module rec TypeTerm : sig
     | ObjTestT of reason * t * t
     (* assignment rest element in array pattern *)
     | ArrRestT of use_op * reason * int * t
-    (* unifies with incoming concrete lower bound
-     * empty_success is a hack that we will likely be able to get rid of once we move to
-     * local inference. When empty_success is true, we short circuit on the EmptyT ~> BecomeT
-     * flow. This is clearly a bug, but there are too many spurious errors due to typeof when
-     * we try to fix it. *)
-    | BecomeT of {
-        reason: reason;
-        t: t;
-        empty_success: bool;
-      }
     (* Keys *)
     | GetKeysT of reason * use_t
     | HasOwnPropT of use_op * reason * t (* The incoming string that we want to check against *)
@@ -770,24 +785,6 @@ module rec TypeTerm : sig
     | ElemT of use_op * reason * t * elem_action
     (* exact ops *)
     | MakeExactT of reason * cont
-    (*
-     * Module import handling
-     *
-     * Why do the following have a is_strict flag, when that's already present in the context
-     * local metadata? Because when checking cycles, during the merge we use the context of the
-     * "leader" module, and thus the is_strict flag in the context won't be accurate.
-     *)
-    | CJSRequireT of {
-        reason: reason;
-        t_out: t;
-        is_strict: bool;
-        legacy_interop: bool;
-      }
-    | ImportModuleNsT of {
-        reason: reason;
-        t: t;
-        is_strict: bool;  (** callee is @flow strict *)
-      }
     | AssertImportIsValueT of reason * string
     (* Module export handling *)
     | CJSExtractNamedExportsT of
@@ -800,7 +797,13 @@ module rec TypeTerm : sig
     | CopyNamedExportsT of reason * t * t_out
     | CopyTypeExportsT of reason * t * t_out
     | CheckUntypedImportT of reason * import_kind
-    | ExportNamedT of reason * named_symbol NameUtils.Map.t (* exports_tmap *) * export_kind * t_out
+    | ExportNamedT of {
+        reason: reason;
+        value_exports_tmap: named_symbol NameUtils.Map.t;
+        type_exports_tmap: named_symbol NameUtils.Map.t;
+        export_kind: export_kind;
+        tout: t_out;
+      }
     | ExportTypeT of {
         reason: reason;
         name_loc: ALoc.t option;
@@ -886,6 +889,7 @@ module rec TypeTerm : sig
     | FilterOptionalT of use_op * t
     | FilterMaybeT of use_op * t
     | DeepReadOnlyT of tvar * ALoc.t * dro_type
+    | HooklikeT of tvar
     | ImplicitVoidReturnT of {
         use_op: use_op;
         reason: reason;
@@ -895,6 +899,7 @@ module rec TypeTerm : sig
         reason: reason;
         id: Generic.id;
         name: Subst_name.t;
+        no_infer: bool;
         cont: cont;
       }
     | OptionalIndexedAccessT of {
@@ -997,8 +1002,7 @@ module rec TypeTerm : sig
    * annotations. That is, `var {p}: {p: string}; p = 0` should be an error,
    * because `p` should behave like a `string` annotation.
    *
-   * We accomplish this by wrapping the binding itself in an AnnotT type. The
-   * wrapped type must be 0->1, which is enforced with BecomeT.
+   * We accomplish this by wrapping the binding itself in an AnnotT type.
    *
    * Since DestructuringT uses with the DestructAnnot kind should only encounter
    * annotations, the set of lower bounds will be a subset of all possible
@@ -1029,9 +1033,15 @@ module rec TypeTerm : sig
         * class_binding list
         * bool
         * opt_method_action
-    | OptGetPropT of use_op * reason * ident option * propref
+    | OptGetPropT of {
+        use_op: use_op;
+        reason: reason;
+        id: ident option;
+        propref: propref;
+        hint: lazy_hint_t;
+      }
     | OptGetPrivatePropT of use_op * reason * string * class_binding list * bool
-    | OptTestPropT of use_op * reason * ident * propref
+    | OptTestPropT of use_op * reason * ident * propref * lazy_hint_t
     | OptGetElemT of use_op * reason * ident option * bool (* from annot *) * t
     | OptCallElemT of use_op * (* call *) reason * (* lookup *) reason * t * opt_method_action
 
@@ -1104,6 +1114,7 @@ module rec TypeTerm : sig
        of the function in type [t]. We also include information for all type arguments
        and argument types of the call, to enable polymorphic calls. *)
     | LatentP of pred_funcall_info Lazy.t * index
+    | NoP
 
   and substitution = Key.t SMap.t
 
@@ -1168,10 +1179,17 @@ module rec TypeTerm : sig
     return_t: t;
     predicate: fun_predicate option;
     def_reason: Reason.t;
+    hook: react_hook;
   }
 
+  and react_hook =
+    | HookDecl of ALoc.id
+    | HookAnnot
+    | NonHook
+    | AnyHook
+
   and fun_predicate =
-    | PredBased of (reason * predicate Key_map.t * predicate Key_map.t)
+    | PredBased of (reason * (predicate Key_map.t * predicate Key_map.t) Lazy.t)
     | TypeGuardBased of {
         param_name: ALoc.t * string;
         type_guard: t;
@@ -1286,6 +1304,7 @@ module rec TypeTerm : sig
 
   and dro_type =
     | HookReturn
+    | HookArg
     | Props
     | DROAnnot
 
@@ -1339,6 +1358,11 @@ module rec TypeTerm : sig
     | ObjAssign of { assert_exact: bool }
     (* Obj.assign(target, ...source) *)
     | ObjSpreadAssign
+
+  and namespace_type = {
+    values_type: t;
+    types_tmap: Properties.id;
+  }
 
   and cont =
     | Lower of use_op * t
@@ -1514,7 +1538,6 @@ module rec TypeTerm : sig
   and named_symbol = {
     name_loc: ALoc.t option;
     preferred_def_locs: ALoc.t Nel.t option;
-    is_type_only_export: bool;
     type_: t;
   }
 
@@ -1542,6 +1565,13 @@ module rec TypeTerm : sig
     | ClassKind
     | InterfaceKind of { inline: bool }
 
+  and instance_t = {
+    inst: insttype;
+    static: t;
+    super: t;
+    implements: t list;
+  }
+
   and opaquetype = {
     opaque_id: ALoc.id;
     underlying_t: t option;
@@ -1553,13 +1583,15 @@ module rec TypeTerm : sig
   and exporttypes = {
     (*
      * tmap used to store individual, named ES exports as generated by `export`
-     * statements in a module. Note that this includes `export type` as well.
-     *
+     * statements in a module.
+     *)
+    value_exports_tmap: Exports.id;
+    (*
      * Note that CommonJS modules may also populate this tmap if their export
      * type is an object (that object's properties become named exports) or if
-     * it has any "type" exports via `export type ...`.
+     * it has any "type" exports via `export type ...`
      *)
-    exports_tmap: Exports.id;
+    type_exports_tmap: Exports.id;
     (*
      * This stores the CommonJS export type when applicable and is used as the
      * exact return type for calls to require(). This slot doesn't apply to pure
@@ -1579,8 +1611,7 @@ module rec TypeTerm : sig
     | ImportValue
 
   and export_kind =
-    | ExportType
-    | ExportValue
+    | DirectExport
     | ReExport
 
   and typeparam = {
@@ -1654,6 +1685,7 @@ module rec TypeTerm : sig
     | ReactCheckComponentConfig of Property.t NameUtils.Map.t
     | ReactCheckComponentRef
     | ReactDRO of (ALoc.t * dro_type)
+    | MakeHooklike
     | MappedType of {
         (* Homomorphic mapped types use an inline keyof: {[key in keyof O]: T} or a type parameter
          * bound by $Keys/keyof: type Homomorphic<Keys: $Keys<O>> = {[key in O]: T *)
@@ -1721,6 +1753,7 @@ module rec TypeTerm : sig
 
   and concretization_target =
     | ConcretizeIntersectionT of t list * t list * reason * InterRep.t * use_t
+    | ConcretizeForImportsExports of ident
     (* The purpose of this utility is to concretize a resolved type for the purpose
      * of type inspection. The goal here is to simplify types like EvalT, OpenT,
      * TypeAppT, etc. and propagate them as lower bounds to the ident (payload). *)
@@ -2112,7 +2145,9 @@ and Properties : sig
 
   val generate_id : unit -> id
 
-  val id_of_aloc_id : ALoc.id -> id
+  val id_of_aloc_id : type_sig:bool -> ALoc.id -> id
+
+  val equal_id : id -> id -> bool
 
   val string_of_id : id -> string
 
@@ -2179,15 +2214,7 @@ end = struct
             | Field { preferred_def_locs; _ } -> preferred_def_locs
             | _ -> None
           in
-          NameUtils.Map.add
-            x
-            {
-              name_loc = Property.read_loc p;
-              preferred_def_locs;
-              is_type_only_export = false;
-              type_;
-            }
-            tmap
+          NameUtils.Map.add x { name_loc = Property.read_loc p; preferred_def_locs; type_ } tmap
         | None -> tmap)
       pmap
       NameUtils.Map.empty
@@ -2216,7 +2243,7 @@ and Eval : sig
 
   val compare_id : id -> id -> int
 
-  val id_of_aloc_id : ALoc.id -> id
+  val id_of_aloc_id : type_sig:bool -> ALoc.id -> id
 
   val string_of_id : id -> string
 
@@ -2225,6 +2252,8 @@ and Eval : sig
   val equal_id : id -> id -> bool
 
   module Map : WrappedMap.S with type key = id
+
+  module Set : Flow_set.S with type elt = id
 end = struct
   include Source_or_generated_id
 
@@ -2232,6 +2261,12 @@ end = struct
     type key = id
 
     type t = key
+
+    let compare = compare_id
+  end)
+
+  module Set : Flow_set.S with type elt = id = Flow_set.Make (struct
+    type t = id
 
     let compare = compare_id
   end)
@@ -2244,7 +2279,7 @@ and Poly : sig
 
   val equal_id : id -> id -> bool
 
-  val id_of_aloc_id : ALoc.id -> id
+  val id_of_aloc_id : type_sig:bool -> ALoc.id -> id
 
   val string_of_id : id -> string
 
@@ -2332,13 +2367,43 @@ and UnionRep : sig
       returns the physically-identical rep. *)
   val ident_map : ?always_keep_source:bool -> (TypeTerm.t -> TypeTerm.t) -> t -> t
 
+  (* Optimization *)
+
+  module UnionEnumMap : WrappedMap.S with type key = UnionEnum.t
+
+  type finally_optimized_rep =
+    | EnumUnion of UnionEnumSet.t
+    | PartiallyOptimizedUnionEnum of UnionEnumSet.t
+    | DisjointUnion of TypeTerm.t UnionEnumMap.t NameUtils.Map.t
+    | PartiallyOptimizedDisjointUnion of TypeTerm.t UnionEnumMap.t NameUtils.Map.t
+    | Empty
+    | Singleton of TypeTerm.t
+
+  type 'loc optimized_error =
+    | ContainsUnresolved of 'loc virtual_reason
+    | NoCandidateMembers (* E.g. `number | string` *)
+    | NoCommonKeys
+    | NonUniqueKeys of (UnionEnum.t * 'loc virtual_reason * 'loc virtual_reason) NameUtils.Map.t
+
   val optimize :
     t ->
+    reason_of_t:(TypeTerm.t -> ALoc.t virtual_reason) ->
     reasonless_eq:(TypeTerm.t -> TypeTerm.t -> bool) ->
     flatten:(TypeTerm.t list -> TypeTerm.t list) ->
     find_resolved:(TypeTerm.t -> TypeTerm.t option) ->
     find_props:(Properties.id -> TypeTerm.property NameUtils.Map.t) ->
     unit
+
+  val optimize_ :
+    t ->
+    reason_of_t:(TypeTerm.t -> reason) ->
+    reasonless_eq:(TypeTerm.t -> TypeTerm.t -> bool) ->
+    flatten:(TypeTerm.t list -> TypeTerm.t list) ->
+    find_resolved:(TypeTerm.t -> TypeTerm.t option) ->
+    find_props:(Properties.id -> TypeTerm.property NameUtils.Map.t) ->
+    (finally_optimized_rep, ALoc.t optimized_error) result
+
+  val set_optimize : t -> (finally_optimized_rep, 'loc optimized_error) result -> unit
 
   val optimize_enum_only : t -> flatten:(TypeTerm.t list -> TypeTerm.t list) -> unit
 
@@ -2366,9 +2431,9 @@ and UnionRep : sig
 
   val check_enum : t -> UnionEnumSet.t option
 
-  val string_of_specialization : t -> string
+  val string_of_specialization_ : finally_optimized_rep option -> string
 
-  val contains_only_flattened_types : TypeTerm.t list -> bool
+  val string_of_specialization : t -> string
 end = struct
   (* canonicalize a type w.r.t. enum membership *)
   let canon =
@@ -2416,7 +2481,12 @@ end = struct
     | PartiallyOptimizedDisjointUnion of TypeTerm.t UnionEnumMap.t NameUtils.Map.t
     | Empty
     | Singleton of TypeTerm.t
-    | Unoptimized
+
+  type 'loc optimized_error =
+    | ContainsUnresolved of 'loc virtual_reason
+    | NoCandidateMembers
+    | NoCommonKeys
+    | NonUniqueKeys of (UnionEnum.t * 'loc virtual_reason * 'loc virtual_reason) NameUtils.Map.t
 
   (** union rep is:
       - list of members in declaration order, with at least 2 elements
@@ -2492,24 +2562,30 @@ end = struct
 
   (* Private helper, must be called after full resolution. Ideally would be returned as a bit by
      TypeTerm.union_flatten, and kept in sync there. *)
-  let contains_only_flattened_types =
-    List.for_all
-      TypeTerm.(
-        function
-        (* the only unresolved tvars at this point are those that instantiate polymorphic types *)
-        | OpenT _
-        (* some types may not be evaluated yet; TODO *)
-        | EvalT _
-        | TypeAppT _
-        | KeysT _
-        | IntersectionT _
-        (* other types might wrap parts that are accessible directly *)
-        | OpaqueT _
-        | DefT (_, InstanceT _)
-        | DefT (_, PolyT _) ->
-          false
-        | _ -> true
-      )
+  let has_unflattened_types ts =
+    let open TypeTerm in
+    let exception Found of TypeTerm.t in
+    try
+      List.iter
+        (fun t ->
+          match t with
+          (* the only unresolved tvars at this point are those that instantiate polymorphic types *)
+          | OpenT _
+          (* some types may not be evaluated yet; TODO *)
+          | EvalT _
+          | TypeAppT _
+          | KeysT _
+          | IntersectionT _
+          (* other types might wrap parts that are accessible directly *)
+          | OpaqueT _
+          | DefT (_, InstanceT _)
+          | DefT (_, PolyT _) ->
+            raise (Found t)
+          | _ -> ())
+        ts;
+      None
+    with
+    | Found t -> Some t
 
   let enum_optimize =
     let split_enum =
@@ -2521,17 +2597,17 @@ end = struct
         (UnionEnumSet.empty, false)
     in
     function
-    | [] -> Empty
-    | [t] -> Singleton t
+    | [] -> Ok Empty
+    | [t] -> Ok (Singleton t)
     | ts ->
       let (tset, partial) = split_enum ts in
       if partial then
         if UnionEnumSet.is_empty tset then
-          Unoptimized
+          Error NoCandidateMembers
         else
-          PartiallyOptimizedUnionEnum tset
+          Ok (PartiallyOptimizedUnionEnum tset)
       else
-        EnumUnion tset
+        Ok (EnumUnion tset)
 
   let canon_prop find_resolved p = Base.Option.(Property.read_t p >>= find_resolved >>= canon)
 
@@ -2551,17 +2627,22 @@ end = struct
 
   let disjoint_union_optimize =
     let base_props_of find_resolved find_props t =
-      Base.Option.(
-        props_of find_props t >>| fun prop_map ->
-        NameUtils.Map.fold
-          (fun key p acc ->
-            match base_prop find_resolved p with
-            | Some enum -> NameUtils.Map.add key (enum, t) acc
-            | _ -> acc)
-          prop_map
-          NameUtils.Map.empty
+      Base.Option.map (props_of find_props t) ~f:(fun prop_map ->
+          NameUtils.Map.fold
+            (fun key p acc ->
+              match base_prop find_resolved p with
+              | Some enum -> NameUtils.Map.add key (enum, t) acc
+              | None -> acc)
+            prop_map
+            NameUtils.Map.empty
       )
     in
+    (* Returns a tuple of (candidates, partial):
+     *  - [candidates] is a list that contains a candidate for each union member.
+     *    A candidate is a mapping from keys in that object to a UnionEnum value.
+     *    Properties that do not have a UnionEnum representation are ignored.
+     *  - [partial] is true iff there exist non-object-like members in the union
+     *)
     let split_disjoint_union find_resolved find_props ts =
       List.fold_left
         (fun (candidates, partial) t ->
@@ -2572,81 +2653,96 @@ end = struct
         ts
     in
     let unique_values =
-      let rec unique_values ~reasonless_eq idx = function
-        | [] -> Some idx
+      let rec unique_values ~reason_of_t ~reasonless_eq idx = function
+        | [] -> Ok idx
         | (enum, t) :: values -> begin
           match UnionEnumMap.find_opt enum idx with
-          | None -> unique_values ~reasonless_eq (UnionEnumMap.add enum t idx) values
+          | None -> unique_values ~reason_of_t ~reasonless_eq (UnionEnumMap.add enum t idx) values
           | Some t' ->
             if reasonless_eq t t' then
-              unique_values ~reasonless_eq idx values
+              (* This corresponds to the case
+               * type T = { f: "a" };
+               * type Union = T | T;
+               *)
+              unique_values ~reason_of_t ~reasonless_eq idx values
             else
-              None
+              Error (enum, reason_of_t t, reason_of_t t')
         end
       in
       unique_values UnionEnumMap.empty
     in
-    let unique ~reasonless_eq idx =
+    let unique ~reason_of_t ~reasonless_eq idx =
       NameUtils.Map.fold
-        (fun key values acc ->
-          match unique_values ~reasonless_eq values with
-          | None -> acc
-          | Some idx -> NameUtils.Map.add key idx acc)
+        (fun key values (acc, err_acc) ->
+          match unique_values ~reason_of_t ~reasonless_eq values with
+          | Error err -> (acc, NameUtils.Map.add key err err_acc)
+          | Ok idx -> (NameUtils.Map.add key idx acc, err_acc))
         idx
-        NameUtils.Map.empty
+        (NameUtils.Map.empty, NameUtils.Map.empty)
     in
-    let index ~reasonless_eq candidates =
-      match candidates with
-      | [] -> NameUtils.Map.empty
-      | base_props :: candidates ->
-        (* Compute the intersection of properties of objects that have singleton types *)
-        let init = NameUtils.Map.map (fun enum_t -> [enum_t]) base_props in
-        let idx =
-          List.fold_left
-            (fun acc base_props ->
-              NameUtils.Map.merge
-                (fun _key enum_t_opt values_opt ->
-                  Base.Option.(
-                    both enum_t_opt values_opt >>| fun (enum_t, values) -> List.cons enum_t values
-                  ))
-                base_props
-                acc)
-            init
-            candidates
-        in
-        (* Ensure that enums map to unique types *)
-        unique ~reasonless_eq idx
+    let intersect_props (base_props, candidates) =
+      (* Compute the intersection of properties of objects that have singleton types *)
+      let init = NameUtils.Map.map (fun enum_t -> [enum_t]) base_props in
+      List.fold_left
+        (fun acc base_props ->
+          NameUtils.Map.merge
+            (fun _key enum_t_opt values_opt ->
+              Base.Option.(
+                both enum_t_opt values_opt >>| fun (enum_t, values) -> List.cons enum_t values
+              ))
+            base_props
+            acc)
+        init
+        candidates
     in
-    fun ~reasonless_eq ~find_resolved ~find_props -> function
-      | [] -> Empty
-      | [t] -> Singleton t
+    fun ~reason_of_t ~reasonless_eq ~find_resolved ~find_props -> function
+      | [] -> Ok Empty
+      | [t] -> Ok (Singleton t)
       | ts ->
         let (candidates, partial) = split_disjoint_union find_resolved find_props ts in
-        let map = index ~reasonless_eq candidates in
-        if NameUtils.Map.is_empty map then
-          Unoptimized
-        else if partial then
-          PartiallyOptimizedDisjointUnion map
-        else
-          DisjointUnion map
+        begin
+          match candidates with
+          | [] -> Error NoCandidateMembers
+          | c :: cs ->
+            let idx = intersect_props (c, cs) in
+            if NameUtils.Map.is_empty idx then
+              Error NoCommonKeys
+            else
+              (* Ensure that enums map to unique types *)
+              let (map, err_map) = unique ~reason_of_t ~reasonless_eq idx in
+              if NameUtils.Map.is_empty map then
+                Error (NonUniqueKeys err_map)
+              else if partial then
+                Ok (PartiallyOptimizedDisjointUnion map)
+              else
+                Ok (DisjointUnion map)
+        end
 
-  let optimize rep ~reasonless_eq ~flatten ~find_resolved ~find_props =
+  let optimize_ rep ~reason_of_t ~reasonless_eq ~flatten ~find_resolved ~find_props =
     let ts = flatten (members rep) in
-    if contains_only_flattened_types ts then
+    match has_unflattened_types ts with
+    | None ->
       let opt = enum_optimize ts in
-      let opt =
-        match opt with
-        | Unoptimized -> disjoint_union_optimize ~reasonless_eq ~find_resolved ~find_props ts
-        | _ -> opt
-      in
-      let (_, _, _, _, specialization) = rep in
-      specialization := Some opt
+      (match opt with
+      | Error _ -> disjoint_union_optimize ~reason_of_t ~reasonless_eq ~find_resolved ~find_props ts
+      | _ -> opt)
+    | Some t -> Error (ContainsUnresolved (reason_of_t t))
+
+  let set_optimize rep opt =
+    Base.Result.iter opt ~f:(fun opt ->
+        let (_, _, _, _, specialization) = rep in
+        specialization := Some opt
+    )
+
+  let optimize rep ~reason_of_t ~reasonless_eq ~flatten ~find_resolved ~find_props =
+    let opt = optimize_ rep ~reason_of_t ~reasonless_eq ~flatten ~find_resolved ~find_props in
+    set_optimize rep opt
 
   let optimize_enum_only rep ~flatten =
     let ts = flatten (members rep) in
-    if contains_only_flattened_types ts then
+    if Base.Option.is_none (has_unflattened_types ts) then
       match enum_optimize ts with
-      | EnumUnion _ as opt ->
+      | Ok (EnumUnion _ as opt) ->
         let (_, _, _, _, specialization) = rep in
         specialization := Some opt
       | _ -> ()
@@ -2677,7 +2773,6 @@ end = struct
     | Some tcanon -> begin
       match !specialization with
       | None -> Unknown
-      | Some Unoptimized -> Unknown
       | Some Empty -> No
       | Some (Singleton t) ->
         if quick_subtype l t then
@@ -2734,7 +2829,6 @@ end = struct
     | Some prop_map -> begin
       match !specialization with
       | None -> Unknown
-      | Some Unoptimized -> Unknown
       | Some Empty -> No
       | Some (Singleton t) ->
         if quick_subtype l t then
@@ -2754,16 +2848,16 @@ end = struct
     | Some (EnumUnion enums) -> Some enums
     | _ -> None
 
-  let string_of_specialization (_, _, _, _, spec) =
-    match !spec with
+  let string_of_specialization_ = function
     | Some (EnumUnion _) -> "Enum"
     | Some Empty -> "Empty"
-    | Some Unoptimized -> "Unoptimized"
     | Some (Singleton _) -> "Singleton"
     | Some (PartiallyOptimizedDisjointUnion _) -> "Partially Optimized Disjoint Union"
     | Some (DisjointUnion _) -> "Disjoint Union"
     | Some (PartiallyOptimizedUnionEnum _) -> "Partially Optimized Enum"
     | None -> "No Specialization"
+
+  let string_of_specialization (_, _, _, _, spec) = string_of_specialization_ !spec
 end
 
 (* We encapsulate IntersectionT's internal structure.
@@ -3206,6 +3300,13 @@ module AConstraint = struct
     | Annot_ImportModuleNsT of Reason.t * bool
     | Annot_ImportTypeofT of Reason.reason * string
     | Annot_ImportDefaultT of Reason.t * TypeTerm.import_kind * (string * string) * bool
+    (*
+     * Module import handling
+     *
+     * Why do the following have a is_strict flag, when that's already present in the context
+     * local metadata? Because when checking cycles, during the merge we use the context of the
+     * "leader" module, and thus the is_strict flag in the context won't be accurate.
+     *)
     | Annot_CJSRequireT of {
         reason: Reason.t;
         is_strict: bool;
@@ -3213,7 +3314,12 @@ module AConstraint = struct
       }
     (* Exports *)
     | Annot_CJSExtractNamedExportsT of Reason.t * TypeTerm.moduletype
-    | Annot_ExportNamedT of Reason.t * TypeTerm.named_symbol NameUtils.Map.t * TypeTerm.export_kind
+    | Annot_ExportNamedT of {
+        reason: Reason.t;
+        value_exports_tmap: TypeTerm.named_symbol NameUtils.Map.t;
+        type_exports_tmap: TypeTerm.named_symbol NameUtils.Map.t;
+        export_kind: TypeTerm.export_kind;
+      }
     | Annot_ExportTypeT of {
         reason: Reason.t;
         name_loc: ALoc.t option;
@@ -3228,6 +3334,11 @@ module AConstraint = struct
     | Annot_SpecializeT of TypeTerm.use_op * Reason.t * Reason.t * TypeTerm.t list option
     | Annot_ThisSpecializeT of Reason.t * TypeTerm.t
     | Annot_UseT_TypeT of Reason.t * TypeTerm.type_t_kind
+    | Annot_GetTypeFromNamespaceT of {
+        use_op: TypeTerm.use_op;
+        reason: Reason.t;
+        prop_ref: Reason.t * name;
+      }
     | Annot_GetPropT of Reason.t * TypeTerm.use_op * TypeTerm.propref
     | Annot_GetElemT of Reason.t * TypeTerm.use_op * TypeTerm.t (* key *)
     | Annot_ElemT of Reason.t * TypeTerm.use_op * TypeTerm.t (* read action only *)
@@ -3327,6 +3438,7 @@ module AConstraint = struct
     | Annot_AssertExportIsTypeT _ -> "Annot_AssertExportIsTypeT"
     | Annot_CopyNamedExportsT _ -> "Annot_CopyNamedExportsT"
     | Annot_CopyTypeExportsT _ -> "Annot_CopyTypeExportsT"
+    | Annot_GetTypeFromNamespaceT _ -> "Annot_GetTypeFromNamespaceT"
     | Annot_GetPropT _ -> "Annot_GetPropT"
     | Annot_GetElemT _ -> "Annot_GetElemT"
     | Annot_ElemT _ -> "Annot_ElemT"
@@ -3358,11 +3470,12 @@ module AConstraint = struct
     | Annot_ImportDefaultT (r, _, _, _)
     | Annot_ImportModuleNsT (r, _)
     | Annot_CJSExtractNamedExportsT (r, _)
-    | Annot_ExportNamedT (r, _, _)
+    | Annot_ExportNamedT { reason = r; _ }
     | Annot_ExportTypeT { reason = r; _ }
     | Annot_AssertExportIsTypeT (r, _)
     | Annot_CopyNamedExportsT (r, _)
     | Annot_CopyTypeExportsT (r, _)
+    | Annot_GetTypeFromNamespaceT { reason = r; _ }
     | Annot_GetPropT (r, _, _)
     | Annot_GetElemT (r, _, _)
     | Annot_ElemT (r, _, _)
@@ -3387,6 +3500,7 @@ module AConstraint = struct
 
   let use_op_of_operation = function
     | Annot_SpecializeT (use_op, _, _, _)
+    | Annot_GetTypeFromNamespaceT { use_op; _ }
     | Annot_GetPropT (_, use_op, _)
     | Annot_GetElemT (_, use_op, _)
     | Annot_ElemT (_, use_op, _)
@@ -3920,6 +4034,7 @@ let string_of_ctor = function
   | EvalT _ -> "EvalT"
   | ExactT _ -> "ExactT"
   | InternalT (ExtendsT _) -> "ExtendsT"
+  | InternalT (EnforceUnionOptimized _) -> "EnforceUnionOptimizedT"
   | FunProtoT _ -> "FunProtoT"
   | FunProtoApplyT _ -> "FunProtoApplyT"
   | FunProtoBindT _ -> "FunProtoBindT"
@@ -3927,11 +4042,12 @@ let string_of_ctor = function
   | GenericT _ -> "GenericT"
   | KeysT _ -> "KeysT"
   | ModuleT _ -> "ModuleT"
+  | NamespaceT _ -> "NamespaceT"
   | NullProtoT _ -> "NullProtoT"
   | ObjProtoT _ -> "ObjProtoT"
   | MatchingPropT _ -> "MatchingPropT"
   | OpaqueT _ -> "OpaqueT"
-  | ThisClassT _ -> "ThisClassT"
+  | ThisInstanceT _ -> "ThisInstanceT"
   | ThisTypeAppT _ -> "ThisTypeAppT"
   | TypeAppT _ -> "TypeAppT"
   | UnionT _ -> "UnionT"
@@ -4031,7 +4147,6 @@ let string_of_use_ctor = function
   | AssertNonComponentLikeT _ -> "AssertNonComponentLikeT"
   | AssertIterableT _ -> "AssertIterableT"
   | AssertImportIsValueT _ -> "AssertImportIsValueT"
-  | BecomeT _ -> "BecomeT"
   | BindT _ -> "BindT"
   | CallElemT _ -> "CallElemT"
   | CallLatentPredT _ -> "CallLatentPredT"
@@ -4045,7 +4160,6 @@ let string_of_use_ctor = function
         | TryFlow _ -> "TryFlow"
       end
   | CJSExtractNamedExportsT _ -> "CJSExtractNamedExportsT"
-  | CJSRequireT _ -> "CJSRequireT"
   | ComparatorT _ -> "ComparatorT"
   | ConstructorT _ -> "ConstructorT"
   | CopyNamedExportsT _ -> "CopyNamedExportsT"
@@ -4067,6 +4181,7 @@ let string_of_use_ctor = function
   | GetKeysT _ -> "GetKeysT"
   | GetValuesT _ -> "GetValuesT"
   | GetDictValuesT _ -> "GetDictValuesT"
+  | GetTypeFromNamespaceT _ -> "GetTypeFromNamespaceT"
   | GetPropT _ -> "GetPropT"
   | GetPrivatePropT _ -> "GetPrivatePropT"
   | GetProtoT _ -> "GetProtoT"
@@ -4074,7 +4189,6 @@ let string_of_use_ctor = function
   | GuardT _ -> "GuardT"
   | HasOwnPropT _ -> "HasOwnPropT"
   | ImplementsT _ -> "ImplementsT"
-  | ImportModuleNsT _ -> "ImportModuleNsT"
   | PreprocessKitT (_, tool) ->
     spf
       "PreprocessKitT %s"
@@ -4131,6 +4245,7 @@ let string_of_use_ctor = function
   | ThisSpecializeT _ -> "ThisSpecializeT"
   | ToStringT _ -> "ToStringT"
   | UnaryArithT _ -> "UnaryArithT"
+  | ValueToTypeReferenceT _ -> "ValueToTypeReferenceT"
   | VarianceCheckT _ -> "VarianceCheckT"
   | TypeCastT _ -> "TypeCastT"
   | ConcretizeTypeAppsT _ -> "ConcretizeTypeAppsT"
@@ -4143,6 +4258,7 @@ let string_of_use_ctor = function
   | ExtractReactRefT _ -> "ExtractReactRefT"
   | FilterMaybeT _ -> "FilterMaybeT"
   | DeepReadOnlyT _ -> "DeepReadOnlyT"
+  | HooklikeT _ -> "HooklikeT"
   | SealGenericT _ -> "SealGenericT"
   | OptionalIndexedAccessT _ -> "OptionalIndexedAccessT"
   | CheckUnusedPromiseT _ -> "CheckUnusedPromiseT"
@@ -4192,6 +4308,7 @@ let rec string_of_predicate = function
   | PropNonMaybeP (key, _) -> spf "prop `%s` is not null or undefined" key
   | LatentP ((lazy (_, _, OpenT (_, id), _, _)), i) -> spf "LatentPred(TYPE_%d, %d)" id i
   | LatentP ((lazy (_, _, t, _, _)), i) -> spf "LatentPred(%s, %d)" (string_of_ctor t) i
+  | NoP -> "NoP"
 
 let string_of_type_t_kind = function
   | TypeAliasKind -> "TypeAliasKind"
@@ -4259,7 +4376,15 @@ let default_obj_assign_kind = ObjAssign { assert_exact = false }
 
 (* A method type is a function type with `this` specified. *)
 let mk_methodtype
-    this_t ?(subtyping = This_Function) tins ~rest_param ~def_reason ?params_names ~predicate tout =
+    this_t
+    ?(subtyping = This_Function)
+    ?(hook = NonHook)
+    tins
+    ~rest_param
+    ~def_reason
+    ?params_names
+    ~predicate
+    tout =
   {
     this_t = (this_t, subtyping);
     params =
@@ -4270,6 +4395,7 @@ let mk_methodtype
     return_t = tout;
     predicate;
     def_reason;
+    hook;
   }
 
 let mk_methodcalltype targs args ?meth_generic_this ?(meth_strict_arity = true) tout =
@@ -4380,9 +4506,11 @@ let apply_opt_use opt_use t_out =
     PrivateMethodT (op, r1, r2, p, scopes, static, apply_opt_action action t_out)
   | OptCallT { use_op; reason; opt_funcalltype = f; return_hint } ->
     CallT { use_op; reason; call_action = apply_opt_funcalltype f t_out; return_hint }
-  | OptGetPropT (u, r, i, p) -> GetPropT (u, r, i, p, t_out)
+  | OptGetPropT { use_op; reason; id; propref; hint } ->
+    GetPropT { use_op; reason; id; from_annot = false; propref; tout = t_out; hint }
   | OptGetPrivatePropT (u, r, s, cbs, b) -> GetPrivatePropT (u, r, s, cbs, b, t_out)
-  | OptTestPropT (u, r, i, p) -> TestPropT (u, r, i, p, t_out)
+  | OptTestPropT (use_op, reason, id, propref, hint) ->
+    TestPropT { use_op; reason; id; propref; tout = t_out; hint }
   | OptGetElemT (use_op, reason, id, from_annot, key_t) ->
     GetElemT { use_op; reason; id; from_annot; access_iterables = false; key_t; tout = t_out }
   | OptCallElemT (u, r1, r2, elt, call) -> CallElemT (u, r1, r2, elt, apply_opt_action call t_out)

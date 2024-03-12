@@ -7,7 +7,7 @@ component Fragment<T: React.Node>(children: T) renders T {
 }
 
 const el = <Fragment>{null}</Fragment>;
-el as renders null; // no error
+el as renders null; // type checks, but invalid-render
 el as renders void; // error
 
 component Foo() {
@@ -17,7 +17,7 @@ component Bar() {
   return null;
 }
 
-component FooContainer(children: renders React.Element<typeof Foo>) {
+component FooContainer(children: renders Foo) {
   return null;
 }
 
@@ -36,7 +36,7 @@ const transitiveBad = (
   </FooContainer>
 ); // error
 
-component Baz() renders React.Element<typeof Foo> {
+component Baz() renders Foo {
   return <Foo />;
 }
 
@@ -49,7 +49,7 @@ const doubleTransitive = (
 ); // ok
 
 component Menu(
-  children: renders React.ChildrenArray<renders React.Element<typeof MenuItem>>,
+  children: renders* MenuItem,
 ) {
   return null;
 }

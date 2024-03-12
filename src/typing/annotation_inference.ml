@@ -43,6 +43,7 @@ let object_like_op = function
   | Annot_ToStringT _
   | Annot__Future_added_value__ _ ->
     false
+  | Annot_GetTypeFromNamespaceT _
   | Annot_GetPropT _
   | Annot_GetElemT _
   | Annot_LookupT _
@@ -69,28 +70,26 @@ let get_fully_resolved_type cx id =
     failwith "unexpected unresolved constraint in annotation inference"
 
 let get_builtin_typeapp cx reason x targs =
-  let t = Flow_js_utils.lookup_builtin_strict cx x reason in
-  TypeUtil.typeapp ~use_desc:false reason t targs
+  let t = Flow_js_utils.lookup_builtin_type cx x reason in
+  TypeUtil.typeapp ~from_value:false ~use_desc:false reason t targs
 
 module type S = sig
-  val mk_typeof_annotation : Context.t -> Reason.t -> Type.t -> Type.t
-
   val mk_type_reference : Context.t -> type_t_kind:Type.type_t_kind -> Reason.t -> Type.t -> Type.t
 
   val mk_instance :
     Context.t -> ?type_t_kind:Type.type_t_kind -> reason -> ?use_desc:bool -> Type.t -> Type.t
 
-  val reposition : Context.t -> ALoc.t -> ?annot_loc:ALoc.t -> Type.t -> Type.t
+  val reposition : Context.t -> ALoc.t -> Type.t -> Type.t
 
   val get_prop :
     Context.t -> Type.use_op -> Reason.t -> ?op_reason:Reason.t -> Reason.name -> Type.t -> Type.t
 
   val get_elem : Context.t -> Type.use_op -> Reason.t -> key:Type.t -> Type.t -> Type.t
 
-  val get_builtin : Context.t -> name -> reason -> Type.t
+  val get_builtin_type : Context.t -> reason -> ?use_desc:bool -> string -> Type.t
 
   val qualify_type :
-    Context.t -> Type.use_op -> Reason.t -> Reason.t * Reason.name -> Type.t -> Type.t
+    Context.t -> Type.use_op -> Reason.t -> op_reason:Reason.t -> Reason.name -> Type.t -> Type.t
 
   val assert_export_is_type : Context.t -> Reason.t -> string -> Type.t -> Type.t
 
@@ -102,6 +101,7 @@ module type S = sig
     Context.t ->
     Reason.reason ->
     Type.export_kind ->
+    Type.named_symbol NameUtils.Map.t ->
     Type.named_symbol NameUtils.Map.t ->
     Type.t ->
     Type.t
@@ -194,7 +194,7 @@ module rec ConsGen : S = struct
 
   let error_recursive cx reason =
     let loc = Reason.loc_of_reason reason in
-    let msg = Error_message.EAnnotationInferenceRecursive (loc, reason) in
+    let msg = Error_message.ETrivialRecursiveDefinition (loc, reason) in
     (match !dst_cx_ref with
     | None -> assert false
     | Some dst_cx -> Flow_js_utils.add_annot_inference_error ~src_cx:cx ~dst_cx msg);
@@ -217,7 +217,7 @@ module rec ConsGen : S = struct
   (* Repositioning does not seem to have any perceptible impact in annotation
    * inference. Instead of replicating the convoluted implementation of Flow_js
    * here, we just return the same type intact. *)
-  let reposition _cx _loc ?annot_loc:_ t = t
+  let reposition _cx _loc t = t
 
   (*****************)
   (* Instantiation *)
@@ -235,14 +235,12 @@ module rec ConsGen : S = struct
 
     let unify _cx _trace ~use_op:_ (_t1, _t2) = ()
 
-    let reposition cx ?trace:_ loc ?desc:_ ?annot_loc:_ t = reposition cx loc t
+    let reposition cx ?trace:_ loc t = reposition cx loc t
   end
 
   module InstantiationKit = Flow_js_utils.Instantiation_kit (Instantiation_helper)
 
   let instantiate_poly cx = InstantiationKit.instantiate_poly cx dummy_trace
-
-  let instantiate_poly_with_targs cx = InstantiationKit.instantiate_poly_with_targs cx dummy_trace
 
   let mk_typeapp_of_poly cx = InstantiationKit.mk_typeapp_of_poly cx dummy_trace
 
@@ -252,11 +250,12 @@ module rec ConsGen : S = struct
   module Import_export_helper : Flow_js_utils.Import_export_helper_sig with type r = Type.t = struct
     type r = Type.t
 
-    let reposition cx loc ?desc:_ ?annot_loc:_ t = reposition cx loc t
+    let reposition cx loc t = reposition cx loc t
 
     let return _cx t = t
 
-    let export_named cx (reason, named, kind) t = ConsGen.export_named cx reason kind named t
+    let export_named cx (reason, values, types, kind) t =
+      ConsGen.export_named cx reason kind values types t
 
     let export_named_fresh_var = export_named
 
@@ -275,12 +274,12 @@ module rec ConsGen : S = struct
 
   let with_concretized_type cx r f t = ConsGen.elab_t cx t (Annot_ConcretizeForImportsExports (r, f))
 
-  module CJSRequireTKit = Flow_js_utils.CJSRequireT_kit (Import_export_helper)
+  module CJSRequireTKit = Flow_js_utils.CJSRequireTKit
   module ImportModuleNsTKit = Flow_js_utils.ImportModuleNsTKit
   module ImportDefaultTKit = Flow_js_utils.ImportDefaultTKit
   module ImportNamedTKit = Flow_js_utils.ImportNamedTKit
   module ImportTypeofTKit = Flow_js_utils.ImportTypeofTKit
-  module ExportNamedTKit = Flow_js_utils.ExportNamedT_kit (Import_export_helper)
+  module ExportNamedTKit = Flow_js_utils.ExportNamedTKit
   module AssertExportIsTypeTKit = Flow_js_utils.AssertExportIsTypeT_kit (Import_export_helper)
   module CopyNamedExportsTKit = Flow_js_utils.CopyNamedExportsT_kit (Import_export_helper)
   module CopyTypeExportsTKit = Flow_js_utils.CopyTypeExportsT_kit (Import_export_helper)
@@ -312,12 +311,12 @@ module rec ConsGen : S = struct
     (* We will not be doing subtyping checks in annotation inference. *)
     let dict_read_check _ _ ~use_op:_ _ = ()
 
-    let reposition cx ?trace:_ loc ?desc:_ ?annot_loc:_ t = reposition cx loc t
+    let reposition cx ?trace:_ loc t = reposition cx loc t
 
     let enum_proto cx ~reason (enum_reason, enum) =
       let enum_t = DefT (enum_reason, EnumT enum) in
       let { representation_t; _ } = enum in
-      get_builtin_typeapp cx reason (OrdinaryName "$EnumProto") [enum_t; representation_t]
+      get_builtin_typeapp cx reason "$EnumProto" [enum_t; representation_t]
 
     let cg_lookup cx _trace ~obj_t ~method_accessible:_ t (reason_op, _kind, propref, use_op, _ids)
         =
@@ -331,6 +330,8 @@ module rec ConsGen : S = struct
 
     let mk_react_dro cx _use_op (props_loc, dro_t) t =
       ConsGen.elab_t cx t (Annot_DeepReadOnlyT (reason_of_t t, props_loc, dro_t))
+
+    let mk_hooklike _cx _use_op t = t
   end
 
   module GetPropTKit = Flow_js_utils.GetPropT_kit (Get_prop_helper)
@@ -451,6 +452,7 @@ module rec ConsGen : S = struct
     | (EvalT (t, TypeDestructorT (_, reason, ReactDRO (dro_loc, dro_kind)), _), _) ->
       let t = elab_t cx t (Annot_DeepReadOnlyT (reason, dro_loc, dro_kind)) in
       elab_t cx t op
+    | (EvalT (t, TypeDestructorT (_, _, MakeHooklike), _), _) -> t
     | (EvalT (t, TypeDestructorT (use_op, reason, PartialType), _), _) ->
       let t = make_partial cx use_op reason t in
       elab_t cx t op
@@ -517,30 +519,33 @@ module rec ConsGen : S = struct
       let tc = specialize_class cx c reason_op reason_tapp ts in
       let t = this_specialize cx reason_tapp this tc in
       elab_t cx t op
-    | ( TypeAppT { reason = reason_tapp; use_op = typeapp_use_op; type_; targs; use_desc = _ },
+    | ( TypeAppT
+          { reason = reason_tapp; use_op = typeapp_use_op; type_; targs; from_value; use_desc = _ },
         Annot_UseT_TypeT _
       ) ->
       (* NOTE omitting TypeAppExpansion.push_unless_loop check. *)
       let reason_op = Type.AConstraint.reason_of_op op in
-      let t = mk_typeapp_instance cx ~use_op:typeapp_use_op ~reason_op ~reason_tapp type_ targs in
-      elab_t cx t op
-    | ( DefT
-          ( reason_tapp,
-            PolyT
-              { tparams_loc; tparams = ids; t_out = DefT (_, ReactAbstractComponentT _) as t; _ }
-          ),
-        Annot_UseT_TypeT (reason_op, RenderTypeKind)
-      ) ->
-      let targs = Nel.to_list ids |> List.map (fun _ -> AnyT.untyped reason_op) in
-      let (t_, _) =
-        instantiate_poly_with_targs
+      let t =
+        mk_typeapp_instance
           cx
-          ~use_op:unknown_use
+          ~use_op:typeapp_use_op
           ~reason_op
           ~reason_tapp
-          (tparams_loc, ids, t)
+          ~from_value
+          type_
           targs
       in
+      elab_t cx t op
+    | ( DefT (_, PolyT { tparams = ids; t_out = DefT (_, ReactAbstractComponentT _) as t; _ }),
+        Annot_UseT_TypeT (reason_op, RenderTypeKind)
+      ) ->
+      let subst_map =
+        Nel.fold_left
+          (fun acc tparam -> Subst_name.Map.add tparam.name (AnyT.untyped reason_op) acc)
+          Subst_name.Map.empty
+          ids
+      in
+      let t_ = subst cx subst_map t in
       elab_t cx t_ op
     | (DefT (reason_tapp, PolyT { tparams_loc; tparams = ids; _ }), Annot_UseT_TypeT (reason, _)) ->
       Flow_js_utils.add_output
@@ -555,15 +560,19 @@ module rec ConsGen : S = struct
            }
         );
       AnyT.error reason
-    | (ThisClassT (r, i, is_this, this_name), Annot_UseT_TypeT (reason, _)) ->
-      let c = Flow_js_utils.fix_this_class cx reason (r, i, is_this, this_name) in
+    | ( DefT (class_r, ClassT (ThisInstanceT (r, i, is_this, this_name))),
+        Annot_UseT_TypeT (reason, _)
+      ) ->
+      let c =
+        DefT (class_r, ClassT (Flow_js_utils.fix_this_instance cx reason (r, i, is_this, this_name)))
+      in
       elab_t cx c op
     | (DefT (_, ClassT it), Annot_UseT_TypeT (reason, _)) ->
       (* a class value annotation becomes the instance type *)
       reposition cx (loc_of_reason reason) it
     | ((DefT (_, ReactAbstractComponentT _) as l), Annot_UseT_TypeT (reason, _)) ->
       (* a component syntax value annotation becomes an element of that component *)
-      get_builtin_typeapp cx reason (OrdinaryName "React$Element") [l]
+      get_builtin_typeapp cx reason "React$Element" [l]
     | (DefT (_, TypeT (_, l)), Annot_UseT_TypeT _) -> l
     | (DefT (lreason, EnumObjectT enum), Annot_UseT_TypeT _) ->
       (* an enum object value annotation becomes the enum type *)
@@ -583,17 +592,15 @@ module rec ConsGen : S = struct
     (* `import typeof` *)
     (*******************)
     | (_, Annot_ImportTypeofT (reason, export_name)) ->
-      ImportTypeofTKit.on_concrete_type
-        cx
-        ~mk_typeof_annotation:ConsGen.mk_typeof_annotation
-        reason
-        export_name
-        t
+      ImportTypeofTKit.on_concrete_type cx reason export_name t
     (******************)
     (* Module exports *)
     (******************)
-    | (ModuleT m, Annot_ExportNamedT (reason, tmap, export_kind)) ->
-      ExportNamedTKit.on_ModuleT cx (reason, tmap, export_kind) t m
+    | ( ModuleT m,
+        Annot_ExportNamedT { reason = _; value_exports_tmap; type_exports_tmap; export_kind }
+      ) ->
+      ExportNamedTKit.mod_ModuleT cx (value_exports_tmap, type_exports_tmap, export_kind) m;
+      ModuleT m
     | (_, Annot_AssertExportIsTypeT (_, name)) -> AssertExportIsTypeTKit.on_concrete_type cx name t
     | (ModuleT m, Annot_CopyNamedExportsT (reason, target_module_t)) ->
       CopyNamedExportsTKit.on_ModuleT cx (reason, target_module_t) m
@@ -615,14 +622,17 @@ module rec ConsGen : S = struct
     (* Module imports *)
     (******************)
     | (ModuleT m, Annot_CJSRequireT { reason; is_strict; legacy_interop }) ->
-      CJSRequireTKit.on_ModuleT cx (reason, is_strict, legacy_interop) m
+      CJSRequireTKit.on_ModuleT
+        cx
+        ~reposition:(fun _ _ t -> t)
+        (reason, is_strict, legacy_interop)
+        m
     | (ModuleT m, Annot_ImportModuleNsT (reason, is_strict)) ->
       ImportModuleNsTKit.on_ModuleT cx (reason, is_strict) m
     | (ModuleT m, Annot_ImportDefaultT (reason, import_kind, local, is_strict)) ->
       let (_name_loc_opt, t) =
         ImportDefaultTKit.on_ModuleT
           cx
-          ~mk_typeof_annotation:ConsGen.mk_typeof_annotation
           ~assert_import_is_value
           ~with_concretized_type
           (reason, import_kind, local, is_strict)
@@ -633,7 +643,6 @@ module rec ConsGen : S = struct
       let (_name_loc_opt, t) =
         ImportNamedTKit.on_ModuleT
           cx
-          ~mk_typeof_annotation:ConsGen.mk_typeof_annotation
           ~assert_import_is_value
           ~with_concretized_type
           (reason, import_kind, export_name, module_name, is_strict)
@@ -666,10 +675,22 @@ module rec ConsGen : S = struct
       let tc = specialize_class cx c reason_op reason_tapp ts in
       let t = this_specialize cx reason_tapp this tc in
       elab_t cx t op
-    | (TypeAppT { reason = reason_tapp; use_op = typeapp_use_op; type_; targs; use_desc = _ }, _) ->
+    | ( TypeAppT
+          { reason = reason_tapp; use_op = typeapp_use_op; type_; targs; from_value; use_desc = _ },
+        _
+      ) ->
       (* NOTE omitting TypeAppExpansion.push_unless_loop check. *)
       let reason_op = Type.AConstraint.reason_of_op op in
-      let t = mk_typeapp_instance cx ~use_op:typeapp_use_op ~reason_op ~reason_tapp type_ targs in
+      let t =
+        mk_typeapp_instance
+          cx
+          ~use_op:typeapp_use_op
+          ~reason_op
+          ~reason_tapp
+          ~from_value
+          type_
+          targs
+      in
       elab_t cx t op
     (****************)
     (* Opaque types *)
@@ -789,22 +810,26 @@ module rec ConsGen : S = struct
     (**********)
     (* Mixins *)
     (**********)
-    | (ThisClassT (_, DefT (_, InstanceT { inst; _ }), is_this, this_name), Annot_MixinT r) ->
+    | ( DefT (class_r, ClassT (ThisInstanceT (inst_r, { inst; _ }, is_this, this_name))),
+        Annot_MixinT r
+      ) ->
       (* A class can be viewed as a mixin by extracting its immediate properties,
        * and "erasing" its static and super *)
       let static = ObjProtoT r in
       let super = ObjProtoT r in
-      this_class_type
-        (DefT (r, InstanceT { static; super; implements = []; inst }))
-        is_this
-        this_name
+      DefT
+        ( class_r,
+          ClassT
+            (ThisInstanceT (inst_r, { static; super; implements = []; inst }, is_this, this_name))
+        )
     | ( DefT
           ( _,
             PolyT
               {
                 tparams_loc;
                 tparams = xs;
-                t_out = ThisClassT (_, DefT (_, InstanceT { inst; _ }), is_this, this_name);
+                t_out =
+                  DefT (class_r, ClassT (ThisInstanceT (inst_r, { inst; _ }, is_this, this_name)));
                 _;
               }
           ),
@@ -812,12 +837,12 @@ module rec ConsGen : S = struct
       ) ->
       let static = ObjProtoT r in
       let super = ObjProtoT r in
-      let instance = DefT (r, InstanceT { static; super; implements = []; inst }) in
+      let instance = { static; super; implements = []; inst } in
       poly_type
         (Type.Poly.generate_id ())
         tparams_loc
         xs
-        (this_class_type instance is_this this_name)
+        (DefT (class_r, ClassT (ThisInstanceT (inst_r, instance, is_this, this_name))))
     | (AnyT (_, src), Annot_MixinT r) -> AnyT.why src r
     (***********************)
     (* Type specialization *)
@@ -827,11 +852,12 @@ module rec ConsGen : S = struct
       ) ->
       let ts = Base.Option.value ts ~default:[] in
       mk_typeapp_of_poly cx ~use_op ~reason_op ~reason_tapp id tparams_loc xs t ts
-    | ((DefT (_, ClassT _) | ThisClassT _), Annot_SpecializeT (_, _, _, None)) -> t
+    | (DefT (_, ClassT _), Annot_SpecializeT (_, _, _, None)) -> t
     | (AnyT _, Annot_SpecializeT _) -> t
-    | (ThisClassT (_, i, _, this_name), Annot_ThisSpecializeT (reason, this)) ->
-      let i = subst cx (Subst_name.Map.singleton this_name this) i in
-      reposition cx (loc_of_reason reason) i
+    | (DefT (_, ClassT (ThisInstanceT (r, i, _, this_name))), Annot_ThisSpecializeT (reason, this))
+      ->
+      let i = subst_instance_type cx (Subst_name.Map.singleton this_name this) i in
+      reposition cx (loc_of_reason reason) (DefT (r, InstanceT i))
     (* this-specialization of non-this-abstracted classes is a no-op *)
     | (DefT (_, ClassT i), Annot_ThisSpecializeT (reason, _this)) ->
       reposition cx (loc_of_reason reason) i
@@ -844,17 +870,15 @@ module rec ConsGen : S = struct
       let reason_op = Type.AConstraint.reason_of_op op in
       let (t, _) = instantiate_poly cx ~use_op ~reason_op ~reason_tapp (tparams_loc, ids, t) in
       elab_t cx t op
-    | (ThisClassT (r, i, is_this, this_name), _) ->
+    | (ThisInstanceT (r, i, is_this, this_name), _) ->
       let reason = Type.AConstraint.reason_of_op op in
-      let t = Flow_js_utils.fix_this_class cx reason (r, i, is_this, this_name) in
+      let t = Flow_js_utils.fix_this_instance cx reason (r, i, is_this, this_name) in
       elab_t cx t op
     (*****************************)
     (* React Abstract Components *)
     (*****************************)
     | (DefT (r, ReactAbstractComponentT _), (Annot_GetPropT _ | Annot_GetElemT _)) ->
-      let statics =
-        Flow_js_utils.lookup_builtin_strict cx (OrdinaryName "React$AbstractComponentStatics") r
-      in
+      let statics = Flow_js_utils.lookup_builtin_type cx "React$AbstractComponentStatics" r in
       elab_t cx statics op
     (****************)
     (* Custom types *)
@@ -967,6 +991,44 @@ module rec ConsGen : S = struct
       Obj_type.mk_with_proto cx reason ~obj_kind:Exact t
     | (DefT (_, (NullT | VoidT)), Annot_ObjRestT (reason, _)) ->
       Obj_type.mk ~obj_kind:Exact cx reason
+    (************************************)
+    (* Namespace and type qualification *)
+    (************************************)
+    | ( NamespaceT { values_type; types_tmap },
+        Annot_GetTypeFromNamespaceT
+          { reason = reason_op; use_op; prop_ref = (prop_ref_reason, prop_name) }
+      ) ->
+      (match
+         NameUtils.Map.find_opt prop_name (Context.find_props cx types_tmap)
+         |> Base.Option.bind ~f:Type.Property.read_t
+       with
+      | Some prop -> prop
+      | None ->
+        elab_t
+          cx
+          ~seen
+          values_type
+          (Annot_GetPropT
+             ( reason_op,
+               use_op,
+               Named { reason = prop_ref_reason; name = prop_name; from_indexed_access = false }
+             )
+          ))
+    | (NamespaceT { values_type; types_tmap = _ }, _) -> elab_t cx ~seen values_type op
+    | ( _,
+        Annot_GetTypeFromNamespaceT
+          { reason = reason_op; use_op; prop_ref = (prop_ref_reason, prop_name) }
+      ) ->
+      elab_t
+        cx
+        ~seen
+        t
+        (Annot_GetPropT
+           ( reason_op,
+             use_op,
+             Named { reason = prop_ref_reason; name = prop_name; from_indexed_access = false }
+           )
+        )
     (************)
     (* GetPropT *)
     (************)
@@ -1092,10 +1154,10 @@ module rec ConsGen : S = struct
     (***************)
     | (ObjProtoT _, Annot_LookupT (reason_op, _, Named { name; _ }, _))
       when Flow_js_utils.is_object_prototype_method name ->
-      Flow_js_utils.lookup_builtin_strict cx (OrdinaryName "Object") reason_op
+      Flow_js_utils.lookup_builtin_value cx "Object" reason_op
     | (FunProtoT _, Annot_LookupT (reason_op, _, Named { name; _ }, _))
       when Flow_js_utils.is_function_prototype name ->
-      Flow_js_utils.lookup_builtin_strict cx (OrdinaryName "Function") reason_op
+      Flow_js_utils.lookup_builtin_value cx "Function" reason_op
     | ( (DefT (_, NullT) | ObjProtoT _ | FunProtoT _),
         Annot_LookupT (reason_op, use_op, Named { reason = reason_prop; name; _ }, _)
       ) ->
@@ -1110,11 +1172,11 @@ module rec ConsGen : S = struct
     (****************************************)
     | (ObjProtoT reason, _) ->
       let use_desc = true in
-      let obj_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Object") in
+      let obj_proto = get_builtin_type cx reason ~use_desc "Object" in
       elab_t cx obj_proto op
     | (FunProtoT reason, _) ->
       let use_desc = true in
-      let fun_proto = get_builtin_type cx reason ~use_desc (OrdinaryName "Function") in
+      let fun_proto = get_builtin_type cx reason ~use_desc "Function" in
       elab_t cx fun_proto op
     (*************)
     (* ToStringT *)
@@ -1125,7 +1187,7 @@ module rec ConsGen : S = struct
     (* GetPropT *)
     (************)
     | (DefT (reason, ArrT (ArrayAT { elem_t; _ })), (Annot_GetPropT _ | Annot_LookupT _)) ->
-      let arr = get_builtin_typeapp cx reason (OrdinaryName "Array") [elem_t] in
+      let arr = get_builtin_typeapp cx reason "Array" [elem_t] in
       elab_t cx arr op
     | ( DefT (reason, ArrT (TupleAT { arity; _ })),
         Annot_GetPropT (reason_op, _, Named { name = OrdinaryName "length"; _ })
@@ -1135,21 +1197,21 @@ module rec ConsGen : S = struct
         (Annot_GetPropT _ | Annot_LookupT _)
       ) ->
       let t = elemt_of_arrtype arrtype in
-      elab_t cx (get_builtin_typeapp cx reason (OrdinaryName "$ReadOnlyArray") [t]) op
+      elab_t cx (get_builtin_typeapp cx reason "$ReadOnlyArray" [t]) op
     (************************)
     (* Promoting primitives *)
     (************************)
     | (DefT (reason, StrT _), _) when primitive_promoting_op op ->
-      let builtin = get_builtin_type cx reason ~use_desc:true (OrdinaryName "String") in
+      let builtin = get_builtin_type cx reason ~use_desc:true "String" in
       elab_t cx builtin op
     | (DefT (reason, NumT _), _) when primitive_promoting_op op ->
-      let builtin = get_builtin_type cx reason ~use_desc:true (OrdinaryName "Number") in
+      let builtin = get_builtin_type cx reason ~use_desc:true "Number" in
       elab_t cx builtin op
     | (DefT (reason, BoolT _), _) when primitive_promoting_op op ->
-      let builtin = get_builtin_type cx reason ~use_desc:true (OrdinaryName "Boolean") in
+      let builtin = get_builtin_type cx reason ~use_desc:true "Boolean" in
       elab_t cx builtin op
     | (DefT (reason, SymbolT), _) when primitive_promoting_op op ->
-      let builtin = get_builtin_type cx reason ~use_desc:true (OrdinaryName "Symbol") in
+      let builtin = get_builtin_type cx reason ~use_desc:true "Symbol" in
       elab_t cx builtin op
     | (DefT (lreason, MixedT Mixed_function), (Annot_GetPropT _ | Annot_LookupT _)) ->
       elab_t cx (FunProtoT lreason) op
@@ -1163,13 +1225,8 @@ module rec ConsGen : S = struct
       AnyT.error reason_op
 
   and get_builtin_type cx reason ?(use_desc = false) name =
-    let t = Flow_js_utils.lookup_builtin_strict cx name reason in
+    let t = Flow_js_utils.lookup_builtin_type cx name reason in
     mk_instance_raw cx reason ~use_desc ~reason_type:(reason_of_t t) t
-
-  and get_builtin cx x reason =
-    let builtin = Flow_js_utils.lookup_builtin_strict cx x reason in
-    let f id = resolve_id cx reason id builtin in
-    mk_lazy_tvar cx reason f
 
   and specialize cx t use_op reason_op reason_tapp ts =
     elab_t cx t (Annot_SpecializeT (use_op, reason_op, reason_tapp, ts))
@@ -1194,9 +1251,12 @@ module rec ConsGen : S = struct
     let source = elab_t cx c (Annot_UseT_TypeT (reason_type, type_t_kind)) in
     AnnotT (instance_reason, source, use_desc)
 
-  and mk_typeapp_instance cx ~use_op ~reason_op ~reason_tapp c ts =
+  and mk_typeapp_instance cx ~use_op ~reason_op ~reason_tapp ~from_value c ts =
     let t = specialize cx c use_op reason_op reason_tapp (Some ts) in
-    mk_instance_raw cx reason_tapp ~reason_type:(reason_of_t c) t
+    if from_value then
+      mod_reason_of_t (fun _ -> reason_tapp) t
+    else
+      mk_instance_raw cx reason_tapp ~reason_type:(reason_of_t c) t
 
   and get_statics cx reason t = elab_t cx t (Annot_GetStaticsT reason)
 
@@ -1205,21 +1265,19 @@ module rec ConsGen : S = struct
 
   and get_elem cx use_op reason ~key t = elab_t cx t (Annot_GetElemT (reason, use_op, key))
 
-  and qualify_type cx use_op reason (reason_name, name) t =
+  and qualify_type cx use_op reason ~op_reason prop_name t =
     let f id =
       let t =
-        elab_t cx t (Annot_GetPropT (reason, use_op, mk_named_prop ~reason:reason_name name))
+        elab_t
+          cx
+          t
+          (Annot_GetTypeFromNamespaceT
+             { reason = op_reason; use_op; prop_ref = (reason, prop_name) }
+          )
       in
-      resolve_id cx reason id t
+      resolve_id cx op_reason id t
     in
-    mk_lazy_tvar cx reason f
-
-  (* Unlike Flow_js, types in this module are 0->1, so there is no need for a
-   * mechanism similar to BecomeT of Flow_js. *)
-  and mk_typeof_annotation cx reason t =
-    let annot_loc = loc_of_reason reason in
-    let t = reposition cx (loc_of_reason reason) t in
-    AnnotT (opt_annot_reason ~annot_loc reason, t, false)
+    mk_lazy_tvar cx op_reason f
 
   and assert_export_is_type cx reason name t =
     let f id =
@@ -1231,7 +1289,8 @@ module rec ConsGen : S = struct
   and cjs_require cx t reason is_strict legacy_interop =
     elab_t cx t (Annot_CJSRequireT { reason; is_strict; legacy_interop })
 
-  and export_named cx reason kind named t = elab_t cx t (Annot_ExportNamedT (reason, named, kind))
+  and export_named cx reason export_kind value_exports_tmap type_exports_tmap t =
+    elab_t cx t (Annot_ExportNamedT { reason; value_exports_tmap; type_exports_tmap; export_kind })
 
   and cjs_extract_named_exports cx reason local_module t =
     elab_t cx t (Annot_CJSExtractNamedExportsT (reason, local_module))

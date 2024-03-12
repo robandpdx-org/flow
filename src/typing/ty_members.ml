@@ -300,7 +300,6 @@ type ty_members = {
 let ty_normalizer_options =
   {
     Ty_normalizer_env.expand_internal_types = true;
-    flag_shadowed_type_params = true;
     preserve_inferred_literal_types = false;
     evaluate_type_destructors = Ty_normalizer_env.EvaluateNone;
     optimize_types = true;
@@ -312,7 +311,9 @@ let ty_normalizer_options =
   }
 
 let extract ?(force_instance = false) ~cx ~typed_ast ~file_sig scheme =
-  let genv = Ty_normalizer_env.mk_genv ~cx ~file:(Context.file cx) ~typed_ast ~file_sig in
+  let genv =
+    Ty_normalizer_env.mk_genv ~cx ~file:(Context.file cx) ~typed_ast_opt:(Some typed_ast) ~file_sig
+  in
   match
     Ty_normalizer_flow.expand_members ~force_instance ~options:ty_normalizer_options ~genv scheme
   with

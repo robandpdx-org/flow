@@ -63,9 +63,17 @@ Property `@@iterator` is missing in function [1] but exists in `$Iterable` [2]. 
                 ^^^^^^^^ [1]
 
 References:
-   <BUILTINS>/core.js:1767:11
-   1767| interface $Iterable<+Yield,+Return,-Next> {
+   <BUILTINS>/core.js:1755:11
+   1755| interface $Iterable<+Yield,+Return,-Next> {
                    ^^^^^^^^^ [2]
+
+
+Error ----------------------------------------------------------------------------------------------------- call.js:12:9
+
+Missing an annotation on `x`. [missing-local-annot]
+
+   12| }, ...((x) => 3));
+               ^
 
 
 Error ----------------------------------------------------------------------------------------------------- cast.js:6:15
@@ -267,13 +275,13 @@ Missing an annotation on property `a`. [missing-local-annot]
                         ^^
 
 
-Error --------------------------------------------------------------------------------------------------- class.js:54:18
+Error --------------------------------------------------------------------------------------------------- class.js:54:23
 
 Cannot build a typed interface for this module. You should annotate the exports of this module with types. Missing type
-annotation at property `a`: [signature-verification-failure]
+annotation at identifier: [signature-verification-failure]
 
    54| export class G { a = (p) => 42; } // error
-                        ^^^^^^^^^^^^^^
+                             ^
 
 
 Error --------------------------------------------------------------------------------------------------- class.js:54:23
@@ -282,6 +290,15 @@ Missing an annotation on `p`. [missing-local-annot]
 
    54| export class G { a = (p) => 42; } // error
                              ^
+
+
+Error --------------------------------------------------------------------------------------------------- class.js:54:25
+
+Cannot build a typed interface for this module. You should annotate the exports of this module with types. Missing type
+annotation at function return: [signature-verification-failure]
+
+   54| export class G { a = (p) => 42; } // error
+                               
 
 
 Error --------------------------------------------------------------------------------------------------- class.js:54:25
@@ -511,8 +528,8 @@ Property `@@iterator` is missing in function [1] but exists in `$Iterable` [2]. 
                           ^^^^^^^^ [1]
 
 References:
-   <BUILTINS>/core.js:1767:11
-   1767| interface $Iterable<+Yield,+Return,-Next> {
+   <BUILTINS>/core.js:1755:11
+   1755| interface $Iterable<+Yield,+Return,-Next> {
                    ^^^^^^^^^ [2]
 
 
@@ -853,4 +870,4 @@ Missing an annotation on `y`. [missing-local-annot]
 
 
 
-Found 102 errors
+Found 104 errors

@@ -8,7 +8,7 @@
  * @flow
  */
 
-import type {Codemod} from '../src/Types';
+import type {CodemodModule} from '../src/Types';
 import type {TransformContext} from 'hermes-transform';
 
 import {redirectConsole, restoreConsole} from '../src/utils/redirectConsole';
@@ -59,7 +59,7 @@ export type CodemodTestWithConfigWithOutput<
 
 export function testCodemod<TConfig: ?AnyObject, TCliArgs: ?AnyObject>(
   codemodName: string,
-  codemodModule: Codemod,
+  codemodModule: CodemodModule,
   tests: $ReadOnly<{
     ignored: $ReadOnlyArray<CodemodTestWithConfig<TConfig, TCliArgs>>,
     transformed: $ReadOnlyArray<
@@ -116,7 +116,7 @@ export function testCodemod<TConfig: ?AnyObject, TCliArgs: ?AnyObject>(
           '',
           '',
         ].join('\n'),
-        () => {
+        async () => {
           const transform = (() => {
             return (ctx: TransformContext) =>
               // $FlowFixMe[incompatible-call]
@@ -124,7 +124,7 @@ export function testCodemod<TConfig: ?AnyObject, TCliArgs: ?AnyObject>(
               // $FlowFixMe[prop-missing]
               codemodModule.transform(ctx);
           })();
-          const result = hermesTransform(code, transform, prettierConfig);
+          const result = await hermesTransform(code, transform, prettierConfig);
           expect(result.trim()).toEqual(test.output.trim());
         },
       );

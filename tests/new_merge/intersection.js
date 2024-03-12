@@ -10,5 +10,4 @@ declare class C2 {
 
 declare var c: C1 & C2;
 
-// $FlowFixMe[incompatible-type]
-declare export var x: c;
+declare export var x: c; // error: value-as-type

@@ -8,8 +8,8 @@ expression to your expected type. [underconstrained-implicit-instantiation]
                   ^^^^^^^^^^^ [2]
 
 References:
-   <BUILTINS>/core.js:2050:25
-   2050| declare function $await<T>(p: Promise<T> | T): T;
+   <BUILTINS>/core.js:2044:25
+   2044| declare function $await<T>(p: Promise<T> | T): T;
                                  ^ [1]
 
 
@@ -64,20 +64,6 @@ References:
                                       ^^^^^^ [2]
 
 
-Error --------------------------------------------------------------------------------------------------- invalid.js:5:8
-
-Cannot call `Import.store` because `store` [1] is not a function. [not-a-function]
-
-   invalid.js:5:8
-   5| Import.store(); // Should not crash.
-             ^^^^^
-
-References:
-   invalid-export.js:4:20
-   4| export opaque type store<T> = mixed;
-                         ^^^^^ [1]
-
-
 Error ----------------------------------------------------------------------------------------------- issue_9015.js:20:3
 
 Cannot call `c.query` because `R` [1] is underconstrained by call of method `query` [2]. Either add explicit type
@@ -94,6 +80,152 @@ References:
    issue_9015.js:20:1
    20| c.query('SELECT 1');
        ^^^^^^^^^^^^^^^^^^^ [2]
+
+
+Error -------------------------------------------------------------------------------------------------- no_infer.js:9:9
+
+Cannot call `f2` with `2` bound to `v2` because number [1] is incompatible with string [2]. [incompatible-call]
+
+   no_infer.js:9:9
+   9| f2('1', 2); // error: number ~> string
+              ^ [1]
+
+References:
+   no_infer.js:9:4
+   9| f2('1', 2); // error: number ~> string
+         ^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:11:13
+
+Cannot call `f4` with object literal bound to `v2` because number [1] is incompatible with string [2] in property `f`.
+[incompatible-call]
+
+   no_infer.js:11:13
+   11| f4('1', {f: 2}); // error: number ~> string
+                   ^ [1]
+
+References:
+   no_infer.js:11:4
+   11| f4('1', {f: 2}); // error: number ~> string
+          ^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:13:25
+
+Cannot call `NoInferExported.f2` with `2` bound to `v2` because number [1] is incompatible with string [2].
+[incompatible-call]
+
+   no_infer.js:13:25
+   13| NoInferExported.f2('1', 2); // error: number ~> string
+                               ^ [1]
+
+References:
+   no_infer.js:13:20
+   13| NoInferExported.f2('1', 2); // error: number ~> string
+                          ^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:15:29
+
+Cannot call `NoInferExported.f4` with object literal bound to `v2` because number [1] is incompatible with string [2] in
+property `f`. [incompatible-call]
+
+   no_infer.js:15:29
+   15| NoInferExported.f4('1', {f: 2}); // error: number ~> string
+                                   ^ [1]
+
+References:
+   no_infer.js:15:20
+   15| NoInferExported.f4('1', {f: 2}); // error: number ~> string
+                          ^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------- no_infer.js:19:1
+
+Cannot cast `3` to `ConditionalNoInferToplevel` because number [1] is incompatible with string [2]. [incompatible-cast]
+
+   no_infer.js:19:1
+   19| 3 as ConditionalNoInferToplevel<string>; // error: number ~> string
+       ^ [1]
+
+References:
+   no_infer.js:19:6
+   19| 3 as ConditionalNoInferToplevel<string>; // error: number ~> string
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------- no_infer.js:23:1
+
+Cannot cast `3` to `ConditionalNoInferNested` because number [1] is incompatible with string [2]. [incompatible-cast]
+
+   no_infer.js:23:1
+   23| 3 as ConditionalNoInferNested<string>; // error: number ~> string
+       ^ [1]
+
+References:
+   no_infer.js:23:6
+   23| 3 as ConditionalNoInferNested<string>; // error: number ~> string
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------- no_infer.js:30:7
+
+Cannot call `f5` with `'1'` bound to `v2` because string [1] is incompatible with number literal `1` [2].
+[incompatible-call]
+
+   no_infer.js:30:7
+   30| f5(1, '1'); // error: string ~> number
+             ^^^ [1]
+
+References:
+   no_infer.js:27:15
+   27|   v2: NoInfer<1 extends infer V ? V : string>
+                     ^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:34:15
+
+Cannot instantiate `$Call` because `V` [1] is underconstrained by `$Call` [2]. Either add explicit type arguments or
+cast the expression to your expected type. [underconstrained-implicit-instantiation]
+
+   no_infer.js:34:15
+   34|   v2: NoInfer<$Call<<V>(V) => V, 1>> // error: underconstrained
+                     ^^^^^^^^^^^^^^^^^^^^^ [2]
+
+References:
+   no_infer.js:34:22
+   34|   v2: NoInfer<$Call<<V>(V) => V, 1>> // error: underconstrained
+                            ^ [1]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:43:17
+
+Cannot call `f7` with object literal bound to `v2` because number [1] is incompatible with string [2] in property `a`.
+[incompatible-call]
+
+   no_infer.js:43:17
+   43| f7({a: ''}, {a: 3}); // error: number ~> string
+                       ^ [1]
+
+References:
+   no_infer.js:40:32
+   40|   v2: NoInfer<{[K in keyof T]: T[K]}>
+                                      ^^^^ [2]
+
+
+Error ------------------------------------------------------------------------------------------------ no_infer.js:47:15
+
+Cannot instantiate `$ObjMap` because function type [1] is not a valid argument of `$ObjMap` [2]. [incompatible-use]
+
+   no_infer.js:47:15
+   47|   v2: NoInfer<$ObjMap<<V>(V) => V, {a: string}>> // error: underconstrained
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ [2]
+
+References:
+   no_infer.js:47:23
+   47|   v2: NoInfer<$ObjMap<<V>(V) => V, {a: string}>> // error: underconstrained
+                             ^^^^^^^^^^^ [1]
 
 
 Error ------------------------------------------------------------------------------------------ polyt_flow_error.js:2:7
@@ -994,4 +1126,4 @@ References:
 
 
 
-Found 63 errors
+Found 72 errors

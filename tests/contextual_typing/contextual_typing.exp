@@ -22,8 +22,8 @@ expression to your expected type. [underconstrained-implicit-instantiation]
                             ^^^
 
 References:
-   <BUILTINS>/core.js:1899:19
-   1899| declare class Set<T> extends $ReadOnlySet<T> {
+   <BUILTINS>/core.js:1893:19
+   1893| declare class Set<T> extends $ReadOnlySet<T> {
                            ^ [1]
    arr_rest.js:9:16
       9| const [...y] = new Set() // still error
@@ -78,6 +78,22 @@ References:
    async.js:14:21
    14| async function g(): Promise<{ variables: any }> {
                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ [1]
+
+
+Error ------------------------------------------------------------------------------------------------ call_rest.js:5:16
+
+Missing an annotation on `x`. [missing-local-annot]
+
+   5|     outer(...[(x) => { // TODO okay no annotation required
+                     ^
+
+
+Error ------------------------------------------------------------------------------------------------ call_rest.js:9:22
+
+An annotation on `x` is required because Flow cannot infer its type from local context. [missing-local-annot]
+
+   9|     outer(...inner([(x) => { // TODO okay no annotation required
+                           ^
 
 
 Error --------------------------------------------------------------------------------- destructuring_assignment.js:7:12
@@ -298,8 +314,8 @@ Property `@@iterator` is missing in function [1] but exists in `$Iterable` [2]. 
                 ^^^^^^^^^^^ [1]
 
 References:
-   <BUILTINS>/core.js:1767:11
-   1767| interface $Iterable<+Yield,+Return,-Next> {
+   <BUILTINS>/core.js:1755:11
+   1755| interface $Iterable<+Yield,+Return,-Next> {
                    ^^^^^^^^^ [2]
 
 
@@ -437,8 +453,8 @@ References:
    implicit_instantiation.js:150:11
     150|   (a: Set<empty>); // error Set<string> ~> Set<empty>
                    ^^^^^ [2]
-   <BUILTINS>/core.js:1899:19
-   1899| declare class Set<T> extends $ReadOnlySet<T> {
+   <BUILTINS>/core.js:1893:19
+   1893| declare class Set<T> extends $ReadOnlySet<T> {
                            ^ [3]
 
 
@@ -457,8 +473,8 @@ References:
    implicit_instantiation.js:151:11
     151|   (b: Set<empty>); // error Set<string> ~> Set<empty>
                    ^^^^^ [2]
-   <BUILTINS>/core.js:1899:19
-   1899| declare class Set<T> extends $ReadOnlySet<T> {
+   <BUILTINS>/core.js:1893:19
+   1893| declare class Set<T> extends $ReadOnlySet<T> {
                            ^ [3]
 
 
@@ -696,8 +712,8 @@ References:
    lits.js:52:27
      52|   s2.values() as Iterator<string>; // error number ~> string
                                    ^^^^^^ [2]
-   <BUILTINS>/core.js:1765:16
-   1765| type Iterator<+T> = $Iterator<T,void,void>;
+   <BUILTINS>/core.js:1753:16
+   1753| type Iterator<+T> = $Iterator<T,void,void>;
                         ^ [3]
 
 
@@ -762,7 +778,7 @@ References:
 
 Error -------------------------------------------------------------------------------------------- param_default.js:8:16
 
-Cannot assign `undefined` to `a` because undefined [1] is incompatible with number [2]. [incompatible-type]
+Cannot assign undefined to `a` because undefined [1] is incompatible with number [2]. [incompatible-type]
 
    param_default.js:8:16
    8| context = (a = undefined) => {(a: number)}; // error: void ~> number
@@ -1205,4 +1221,4 @@ References:
 
 
 
-Found 86 errors
+Found 88 errors

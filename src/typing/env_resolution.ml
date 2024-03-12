@@ -10,10 +10,11 @@ open Type
 open Reason
 open Loc_collections
 open Utils_js
+open Type_operation_utils
 module Ast = Flow_ast
 module EnvMap = Env_api.EnvMap
 module Statement = Fix_statement.Statement_
-module Anno = Type_annotation.Make (Type_annotation.FlowJS) (Statement)
+module Anno = Type_annotation.Make (Type_annotation_cons_gen.FlowJS) (Statement)
 
 let mk_tparams_map cx tparams_map =
   let { Loc_env.tparams; _ } = Context.environment cx in
@@ -53,20 +54,43 @@ let expression cx ?cond exp =
   in
   t
 
+let make_hooklike cx t =
+  if Context.hooklike_functions cx then
+    Flow_js.mk_possibly_evaluated_destructor
+      cx
+      unknown_use
+      (TypeUtil.reason_of_t t)
+      t
+      MakeHooklike
+      (Eval.generate_id ())
+  else
+    t
+
 let resolve_annotation cx tparams_map ?(react_deep_read_only = None) anno =
   let cache = Context.node_cache cx in
   let tparams_map = mk_tparams_map cx tparams_map in
   let (t, anno) = Anno.mk_type_available_annotation cx tparams_map anno in
   let t =
     match react_deep_read_only with
-    | Some param_loc when Context.react_rule_enabled cx Options.DeepReadOnlyProps ->
-      Flow_js.mk_possibly_evaluated_destructor
-        cx
-        unknown_use
-        (TypeUtil.reason_of_t t)
+    | Some ((_, kind) as param_loc) ->
+      let enabled =
+        match kind with
+        | HookArg
+        | Props ->
+          Context.react_rule_enabled cx Options.DeepReadOnlyProps
+        | HookReturn -> Context.react_rule_enabled cx Options.DeepReadOnlyHookReturns
+        | DROAnnot -> true
+      in
+      if enabled then
+        Flow_js.mk_possibly_evaluated_destructor
+          cx
+          unknown_use
+          (TypeUtil.reason_of_t t)
+          t
+          (ReactDRO param_loc)
+          (Eval.generate_id ())
+      else
         t
-        (ReactDRO param_loc)
-        (Eval.generate_id ())
     | _ -> t
   in
   if Context.typing_mode cx = Context.CheckingMode then Node_cache.set_annotation cache anno;
@@ -76,11 +100,11 @@ let rec synthesizable_expression cx ?cond exp =
   let open Ast.Expression in
   match exp with
   | (loc, Identifier (_, name)) -> Statement.identifier cx name loc
-  | (loc, StringLiteral lit) -> Statement.string_literal cx loc lit
-  | (loc, BooleanLiteral lit) -> Statement.boolean_literal loc lit
+  | (loc, StringLiteral lit) -> Statement.string_literal cx ~as_const:false loc lit
+  | (loc, BooleanLiteral lit) -> Statement.boolean_literal ~as_const:false loc lit
   | (loc, NullLiteral _) -> Statement.null_literal loc
-  | (loc, NumberLiteral lit) -> Statement.number_literal loc lit
-  | (loc, BigIntLiteral lit) -> Statement.bigint_literal loc lit
+  | (loc, NumberLiteral lit) -> Statement.number_literal ~as_const:false loc lit
+  | (loc, BigIntLiteral lit) -> Statement.bigint_literal ~as_const:false loc lit
   | (loc, RegExpLiteral _) -> Statement.regexp_literal cx loc
   | (loc, ModuleRefLiteral lit) ->
     let (t, _lit) = Statement.module_ref_literal cx loc lit in
@@ -157,32 +181,22 @@ let resolve_hint cx loc hint =
   let rec resolve_hint_node = function
     | AnnotationHint (tparams_locs, anno) -> resolve_annotation cx tparams_locs anno
     | ValueHint exp -> expression cx exp
-    | ProvidersHint (loc, []) ->
-      let env = Context.environment cx in
-      Type_env.check_readable cx Env_api.OrdinaryNameLoc loc;
-      Base.Option.value_exn (Loc_env.find_ordinary_write env loc)
+    | ProvidersHint (loc, []) -> Type_env.checked_find_loc_env_write cx Env_api.OrdinaryNameLoc loc
     | ProvidersHint (l1, l2 :: rest) ->
-      let env = Context.environment cx in
-      Type_env.check_readable cx Env_api.OrdinaryNameLoc l1;
-      Type_env.check_readable cx Env_api.OrdinaryNameLoc l2;
-      let t1 = Base.Option.value_exn (Loc_env.find_ordinary_write env l1) in
-      let t2 = Base.Option.value_exn (Loc_env.find_ordinary_write env l2) in
+      let t1 = Type_env.checked_find_loc_env_write cx Env_api.OrdinaryNameLoc l1 in
+      let t2 = Type_env.checked_find_loc_env_write cx Env_api.OrdinaryNameLoc l2 in
       let ts =
         Base.List.map rest ~f:(fun loc ->
-            Type_env.check_readable cx Env_api.OrdinaryNameLoc loc;
-            Base.Option.value_exn (Loc_env.find_ordinary_write env loc)
+            Type_env.checked_find_loc_env_write cx Env_api.OrdinaryNameLoc loc
         )
       in
       UnionT (mk_reason (RCustom "providers") loc, UnionRep.make t1 t2 ts)
-    | WriteLocHint (kind, loc) ->
-      let env = Context.environment cx in
-      Type_env.check_readable cx kind loc;
-      Base.Option.value_exn (Loc_env.find_write env kind loc)
+    | WriteLocHint (kind, loc) -> Type_env.checked_find_loc_env_write cx kind loc
     | StringLiteralType name ->
       DefT (mk_reason (RIdentifier (OrdinaryName name)) loc, SingletonStrT (OrdinaryName name))
     | BuiltinType name ->
       let reason = mk_reason (RCustom name) loc in
-      Flow_js.get_builtin_type cx reason (OrdinaryName name)
+      Flow_js.get_builtin_type cx reason name
     | AnyErrorHint reason -> AnyT.error reason
     | ComposedArrayPatternHint (loc, elements) ->
       let reason = mk_reason RDestructuring loc in
@@ -324,8 +338,8 @@ let resolve_pred_func cx (ex, callee, targs, arguments) =
     )
 
 let resolve_annotated_function
-    cx synthesizable ~bind_this ~statics reason tparams_map function_loc function_ =
-  let { Ast.Function.body; params; sig_loc; return; _ } = function_ in
+    cx ~bind_this ~statics ~hook_like reason tparams_map function_loc function_ =
+  let { Ast.Function.body; params; sig_loc; hook; _ } = function_ in
   let cache = Context.node_cache cx in
   let tparams_map = mk_tparams_map cx tparams_map in
   let default_this =
@@ -347,27 +361,22 @@ let resolve_annotated_function
       reason
       function_
   in
-  begin
-    match synthesizable with
-    | FunctionPredicateSynthesizable (_, pred_expr) ->
-      let { Statement.Func_stmt_sig.Types.return_t; fparams; _ } = func_sig in
-      let params = Statement.Func_stmt_params.value fparams in
-      let return_t = TypeUtil.type_t_of_annotated_or_inferred return_t in
-      let (return_annot, _, _) = Anno.mk_return_annot cx tparams_map params reason return in
-      let return_annot = TypeUtil.type_t_of_annotated_or_inferred return_annot in
-      let use_op = Op (FunReturnStatement { value = mk_expression_reason pred_expr }) in
-      Flow_js.flow cx (return_annot, UseT (use_op, return_t))
-    | _ -> ()
-  end;
   Node_cache.set_function_sig cache sig_loc sig_data;
-  ( Statement.Func_stmt_sig.functiontype
+  let t =
+    Statement.Func_stmt_sig.functiontype
       cx
       ~arrow:(not bind_this)
       (Some function_loc)
       default_this
-      func_sig,
-    unknown_use
-  )
+      func_sig
+  in
+  let t =
+    if (not hook) && hook_like then
+      make_hooklike cx t
+    else
+      t
+  in
+  (t, unknown_use)
 
 let resolve_annotated_component cx scope_kind reason tparams_map component_loc component =
   if not (Context.component_syntax cx) then begin
@@ -389,10 +398,12 @@ let resolve_annotated_component cx scope_kind reason tparams_map component_loc c
 
 let rec binding_has_annot = function
   | Root (Annotation _) -> true
-  | Select { parent = (_, b); _ } -> binding_has_annot b
+  | Hooklike b
+  | Select { parent = (_, b); _ } ->
+    binding_has_annot b
   | _ -> false
 
-let resolve_binding_partial cx reason loc b =
+let rec resolve_binding cx reason loc b =
   let mk_use_op t = Op (AssignVar { var = Some reason; init = TypeUtil.reason_of_t t }) in
   match b with
   | Root
@@ -412,8 +423,9 @@ let resolve_binding_partial cx reason loc b =
         cx
         tparams_map
         ~react_deep_read_only:
-          (match param_loc with
-          | Some param_loc when react_deep_read_only -> Some (param_loc, Props)
+          (match (param_loc, react_deep_read_only) with
+          | (Some param_loc, Some Comp) -> Some (param_loc, Props)
+          | (Some param_loc, Some Hook) -> Some (param_loc, HookArg)
           | _ -> None)
         annot
     in
@@ -442,8 +454,8 @@ let resolve_binding_partial cx reason loc b =
       let (t, _) =
         resolve_annotated_function
           cx
-          FunctionSynthesizable
           ~bind_this
+          ~hook_like:false
           ~statics:SMap.empty
           reason
           ALocMap.empty
@@ -465,6 +477,7 @@ let resolve_binding_partial cx reason loc b =
         | Ast.Expression.ModuleRefLiteral _
         | Ast.Expression.Identifier _
         | Ast.Expression.TypeCast _
+        | Ast.Expression.AsConstExpression _
         | Ast.Expression.AsExpression _
         | Ast.Expression.Member _ ->
           synthesizable_expression cx (loc, expr)
@@ -537,7 +550,7 @@ let resolve_binding_partial cx reason loc b =
         | Ast.Expression.TaggedTemplate _
         | Ast.Expression.TemplateLiteral _
         | Ast.Expression.This _
-        | Ast.Expression.TSTypeCast _
+        | Ast.Expression.TSSatisfies _
         | Ast.Expression.Unary _
         | Ast.Expression.Update _
         | Ast.Expression.Yield _ ->
@@ -607,9 +620,7 @@ let resolve_binding_partial cx reason loc b =
       (FunctionValue
         {
           hints = _;
-          synthesizable_from_annotation =
-            (FunctionSynthesizable | FunctionPredicateSynthesizable _) as
-            synthesizable_from_annotation;
+          synthesizable_from_annotation = FunctionSynthesizable | FunctionPredicateSynthesizable _;
           function_loc;
           function_;
           statics;
@@ -619,7 +630,7 @@ let resolve_binding_partial cx reason loc b =
         ) ->
     let cache = Context.node_cache cx in
     let tparams_map = mk_tparams_map cx tparams_map in
-    let { Ast.Function.sig_loc; async; generator; params; body; return; _ } = function_ in
+    let { Ast.Function.sig_loc; async; generator; params; body; _ } = function_ in
     let reason_fun =
       func_reason
         ~async
@@ -649,22 +660,11 @@ let resolve_binding_partial cx reason loc b =
         reason_fun
         function_
     in
-    begin
-      match synthesizable_from_annotation with
-      | FunctionPredicateSynthesizable (_, pred_expr) ->
-        let { Statement.Func_stmt_sig.Types.return_t; fparams; _ } = func_sig in
-        let return_t = TypeUtil.type_t_of_annotated_or_inferred return_t in
-        let params = Statement.Func_stmt_params.value fparams in
-        let (return_annot, _, _) = Anno.mk_return_annot cx tparams_map params reason return in
-        let return_annot = TypeUtil.type_t_of_annotated_or_inferred return_annot in
-        let use_op = Op (FunReturnStatement { value = mk_expression_reason pred_expr }) in
-        Flow_js.flow cx (return_annot, UseT (use_op, return_t))
-      | _ -> ()
-    end;
+    let t =
+      Statement.Func_stmt_sig.functiontype cx ~arrow (Some function_loc) default_this func_sig
+    in
     Node_cache.set_function_sig cache sig_loc sig_data;
-    ( Statement.Func_stmt_sig.functiontype cx ~arrow (Some function_loc) default_this func_sig,
-      Op (AssignVar { var = Some reason; init = reason_fun })
-    )
+    (t, Op (AssignVar { var = Some reason; init = reason_fun }))
   | Root
       (FunctionValue
         {
@@ -688,22 +688,13 @@ let resolve_binding_partial cx reason loc b =
           sig_loc
         )
     in
-    let general = Tvar.mk cx reason in
     let func =
       if arrow then
         Statement.mk_arrow cx ~statics reason_fun function_
       else
-        Statement.mk_function
-          cx
-          ~needs_this_param:true
-          ~statics
-          ~general
-          reason_fun
-          function_loc
-          function_
+        Statement.mk_function cx ~needs_this_param:true ~statics reason_fun function_loc function_
     in
     let (func_type, func_ast) = func in
-    Flow_js.flow_t cx (func_type, general);
     let cache = Context.node_cache cx in
     (match id with
     | Some (id_loc, _) -> Node_cache.set_function cache id_loc func
@@ -720,19 +711,12 @@ let resolve_binding_partial cx reason loc b =
     let use_op = Op (AssignVar { var = Some reason; init = reason_fun }) in
     (func_type, use_op)
   | Root (EmptyArray { array_providers; arr_loc }) ->
-    let env = Context.environment cx in
     let (elem_t, tuple_view, reason) =
       let element_reason = mk_reason Reason.unknown_elem_empty_array_desc loc in
       if ALocSet.cardinal array_providers > 0 then (
         let ts =
           ALocSet.elements array_providers
-          |> Base.List.map ~f:(fun loc ->
-                 Type_env.check_readable cx Env_api.ArrayProviderLoc loc;
-                 Type_env.t_option_value_exn
-                   cx
-                   loc
-                   (Loc_env.find_write env Env_api.ArrayProviderLoc loc)
-             )
+          |> Base.List.map ~f:(Type_env.checked_find_loc_env_write cx Env_api.ArrayProviderLoc)
         in
         let constrain_t =
           Tvar.mk_where cx element_reason (fun tvar ->
@@ -761,12 +745,11 @@ let resolve_binding_partial cx reason loc b =
               unknown_use
             )
         in
-        Context.add_constrained_write cx (elem_t, use_op, constrain_t);
+        Context.add_post_inference_subtyping_check cx elem_t use_op constrain_t;
         (elem_t, None, reason)
       ) else
-        let elem_t = Tvar.mk cx element_reason in
-        Flow_js.add_output cx Error_message.(EEmptyArrayNoProvider { loc });
-        Flow_js.flow_t cx (EmptyT.make (mk_reason REmptyArrayElement loc), elem_t);
+        let elem_t = EmptyT.make (mk_reason REmptyArrayElement loc) in
+        Flow_js_utils.add_output cx Error_message.(EEmptyArrayNoProvider { loc });
         (elem_t, Some ([], (0, 0)), replace_desc_reason REmptyArrayLit reason)
     in
     let t = DefT (reason, ArrT (ArrayAT { elem_t; tuple_view; react_dro = None })) in
@@ -796,7 +779,7 @@ let resolve_binding_partial cx reason loc b =
       | DecompositionError
       | EncounteredPlaceholder ->
         if has_hint then
-          Flow_js.add_output
+          Flow_js_utils.add_output
             cx
             (Error_message.EMissingLocalAnnotation
                { reason; hint_available = true; from_generic_function = false }
@@ -806,7 +789,7 @@ let resolve_binding_partial cx reason loc b =
     let () =
       match hints with
       | [] ->
-        Flow_js.add_output
+        Flow_js_utils.add_output
           cx
           (Error_message.EMissingLocalAnnotation
              { reason; hint_available = false; from_generic_function = false }
@@ -823,7 +806,8 @@ let resolve_binding_partial cx reason loc b =
     (t, mk_use_op t)
   | Root (UnannotatedParameter reason) ->
     let t = AnyT (reason, AnyError (Some MissingAnnotation)) in
-    Flow_js.add_output
+    Type_env.bind_function_param cx t (loc_of_reason reason);
+    Flow_js_utils.add_output
       cx
       (Error_message.EMissingLocalAnnotation
          { reason; hint_available = false; from_generic_function = false }
@@ -849,6 +833,9 @@ let resolve_binding_partial cx reason loc b =
       | Of { await } -> Statement.for_of_elemt cx right_t reason await
     in
     (t, mk_use_op t)
+  | Hooklike binding ->
+    let (t, use_op) = resolve_binding cx reason loc binding in
+    (make_hooklike cx t, use_op)
   | Select { selector; parent = (parent_loc, binding) } ->
     let refined_type =
       match selector with
@@ -865,26 +852,21 @@ let resolve_binding_partial cx reason loc b =
          we must be in an assignment position and the type must have been resolved. *)
       (t, mk_use_op t)
     | None ->
-      let t =
-        Type_env.t_option_value_exn
-          cx
-          parent_loc
-          (Loc_env.find_write (Context.environment cx) Env_api.PatternLoc parent_loc)
-      in
+      let t = Type_env.checked_find_loc_env_write cx Env_api.PatternLoc parent_loc in
       let has_anno = binding_has_annot binding in
       let (selector, reason, has_default) = mk_selector_reason_has_default cx loc selector in
-      let kind =
-        if has_anno then
-          DestructAnnot
-        else
-          DestructInfer
-      in
       let t =
-        Tvar.mk_no_wrap_where cx reason (fun tout ->
-            Flow_js.flow cx (t, DestructuringT (reason, kind, selector, tout, Reason.mk_id ()))
-        )
-      in
-      let t =
+        let kind =
+          if has_anno then
+            DestructAnnot
+          else
+            DestructInfer
+        in
+        let t =
+          Tvar.mk_no_wrap_where cx reason (fun tout ->
+              Flow_js.flow cx (t, DestructuringT (reason, kind, selector, tout, Reason.mk_id ()))
+          )
+        in
         if has_default then
           let (selector, reason, _) = mk_selector_reason_has_default cx loc Name_def.Default in
           Tvar.mk_no_wrap_where cx reason (fun tout ->
@@ -895,56 +877,30 @@ let resolve_binding_partial cx reason loc b =
       in
       (t, unknown_use))
 
-let resolve_binding cx reason loc_kind loc binding =
-  let (t, use_op) = resolve_binding_partial cx reason loc binding in
-  let has_annot = binding_has_annot binding in
-
-  let t =
-    match binding with
-    | Select _ when has_annot && loc_kind <> Env_api.PatternLoc ->
-      (* This is unnecessary if we are directly resolving an annotation. *)
-      (* If we are destructuring an annotation, the chain of constraints leading
-       * to here will preserve the 0->1 constraint. The mk_typeof_annotation
-       * helper will wrap the destructured type in an AnnotT, to ensure it is
-       * resolved before it is used as an upper bound. The helper also enforces
-       * the destructured type is 0->1 via BecomeT.
-       *
-       * The BecomeT part should not be necessary, but for now it is. Ideally an
-       * annotation would recursively be 0->1, but it's possible for them to
-       * contain inferred parts. For example, a class's instance type where one of
-       * the fields is unannotated. *)
-      AnnotT
-        ( reason,
-          Tvar.mk_where cx reason (fun t' ->
-              Flow_js.flow cx (t, BecomeT { reason; t = t'; empty_success = true })
-          ),
-          false
-        )
-    | _ -> t
-  in
-  (t, use_op)
-
 let resolve_inferred_function cx ~statics ~needs_this_param id_loc reason function_loc function_ =
   let cache = Context.node_cache cx in
-  (* TODO: This is intended to be the general type for the variable in the old environment, needed
-     for generic escape detection. We can do generic escape differently in the future and remove
-     this when we kill the old env. *)
-  let general = Tvar.mk cx reason in
   let ((fun_type, _) as fn) =
-    Statement.mk_function cx ~needs_this_param ~statics ~general reason function_loc function_
+    Statement.mk_function cx ~needs_this_param ~statics reason function_loc function_
   in
-  Flow_js.flow_t cx (fun_type, general);
   Node_cache.set_function cache id_loc fn;
+  let fun_type =
+    if
+      (not function_.Ast.Function.hook)
+      && Base.Option.is_some (Flow_ast_utils.hook_function function_)
+    then
+      make_hooklike cx fun_type
+    else
+      fun_type
+  in
   (fun_type, unknown_use)
 
 let resolve_class cx id_loc reason class_loc class_ =
   let cache = Context.node_cache cx in
-  let self = Type_env.read_class_self_type cx class_loc in
   let ((class_t, class_t_internal, _, _) as sig_info) =
-    Statement.mk_class_sig cx ~name_loc:id_loc ~class_loc reason self class_
+    Statement.mk_class_sig cx ~name_loc:id_loc ~class_loc reason class_
   in
   Node_cache.set_class_sig cache class_loc sig_info;
-  Flow_js.unify cx self class_t_internal;
+  Type_env.bind_class_self_type cx class_t_internal class_loc;
   (class_t, unknown_use)
 
 let resolve_op_assign cx ~exp_loc id_reason lhs op rhs =
@@ -1026,45 +982,54 @@ let resolve_opaque_type cx loc opaque =
   Node_cache.set_opaque cache loc (t, ast);
   (t, unknown_use)
 
-let resolve_import cx id_loc import_reason import_kind module_name source_loc import declare_module
-    =
-  let source_module_t = Import_export.get_module_t cx ~declare_module (source_loc, module_name) in
+let resolve_import cx id_loc import_reason import_kind module_name source_loc import =
+  let source_module_t = Import_export.get_module_t cx (source_loc, module_name) in
   let t =
     match import with
-    | Name_def.Named { kind; remote; remote_loc; local } ->
+    | Name_def.Named { kind; remote; local } ->
       let import_kind = Base.Option.value ~default:import_kind kind in
       let (_, t) =
-        Statement.import_named_specifier_type
+        Import_export.import_named_specifier_type
           cx
           import_reason
           import_kind
           ~module_name
           ~source_module_t
-          ~remote_name_loc:remote_loc
           ~remote_name:remote
           ~local_name:local
       in
-      t
-    | Namespace ->
-      Statement.import_namespace_specifier_type
-        cx
-        import_reason
-        import_kind
-        ~module_name
-        ~source_module_t
-        ~local_loc:id_loc
-    | Default local_name ->
-      let (_, t) =
-        Statement.import_default_specifier_type
+      if Flow_ast_utils.hook_name local then
+        make_hooklike cx t
+      else
+        t
+    | Namespace name ->
+      let t =
+        Import_export.import_namespace_specifier_type
           cx
           import_reason
           import_kind
           ~module_name
           ~source_module_t
           ~local_loc:id_loc
+      in
+      if Flow_ast_utils.hook_name name then
+        make_hooklike cx t
+      else
+        t
+    | Default local_name ->
+      let (_, t) =
+        Import_export.import_default_specifier_type
+          cx
+          import_reason
+          import_kind
+          ~module_name
+          ~source_module_t
           ~local_name
       in
-      t
+      if Flow_ast_utils.hook_name local_name then
+        make_hooklike cx t
+      else
+        t
   in
   (t, unknown_use)
 
@@ -1086,63 +1051,18 @@ let resolve_declare_component cx loc component =
   Node_cache.set_declared_component cache loc (t, ast);
   (t, unknown_use)
 
-let resolve_declare_module cx loc module_ =
+let resolve_declare_namespace cx loc ns =
   let cache = Context.node_cache cx in
-  let ({ Loc_env.declare_module_exports_write_loc = old_dme_loc; _ } as env) =
-    Context.environment cx
-  in
-  Context.set_environment cx { env with Loc_env.declare_module_exports_write_loc = Some loc };
-  let ((t, _) as stuff) = Statement.declare_module cx loc module_ in
-  Node_cache.set_declared_module cache loc stuff;
-  let env = Context.environment cx in
-  Context.set_environment cx { env with Loc_env.declare_module_exports_write_loc = old_dme_loc };
+  let ((t, _) as ast) = Statement.declare_namespace cx loc ns in
+  Node_cache.set_declared_namespace cache loc ast;
   (t, unknown_use)
 
-let resolve_cjs_exports_type cx reason = function
-  | Env_api.CJSModuleExports loc ->
-    let env = Context.environment cx in
-    Type_env.t_option_value_exn cx loc (Loc_env.find_ordinary_write env loc)
-  | Env_api.CJSExportNames named ->
-    let env = Context.environment cx in
-    let props =
-      SMap.fold
-        (fun name (key_loc, def_loc) acc ->
-          let type_ =
-            Type_env.t_option_value_exn cx def_loc (Loc_env.find_ordinary_write env def_loc)
-          in
-          NameUtils.Map.add
-            (OrdinaryName name)
-            (Field
-               {
-                 preferred_def_locs = None;
-                 key_loc = Some key_loc;
-                 polarity = Polarity.Positive;
-                 type_;
-               }
-            )
-            acc)
-        named
-        NameUtils.Map.empty
-    in
-    Obj_type.mk_with_proto
-      cx
-      reason
-      (Type.ObjProtoT reason)
-      ~obj_kind:Type.Exact
-      ~frozen:false
-      ~props
-
-let resolve_cjs_exports_type cx reason state =
-  ( Tvar.mk_fully_resolved_lazy cx reason (lazy (resolve_cjs_exports_type cx reason state)),
-    unknown_use
-  )
-
-let resolve_enum cx id_loc enum_reason enum_loc enum =
+let resolve_enum cx id_loc enum_reason enum_loc name enum =
   if Context.enable_enums cx then
-    let enum_t = Statement.mk_enum cx ~enum_reason id_loc enum in
+    let enum_t = Statement.mk_enum cx ~enum_reason id_loc name enum in
     (DefT (enum_reason, EnumObjectT enum_t), unknown_use)
   else (
-    Flow_js.add_output cx (Error_message.EEnumsNotEnabled enum_loc);
+    Flow_js_utils.add_output cx (Error_message.EEnumsNotEnabled enum_loc);
     (AnyT.error enum_reason, unknown_use)
   )
 
@@ -1185,12 +1105,10 @@ let resolve_generator_next cx reason gen =
       t
     in
     let gen_name =
-      OrdinaryName
-        ( if async then
-          "AsyncGenerator"
-        else
-          "Generator"
-        )
+      if async then
+        "AsyncGenerator"
+      else
+        "Generator"
     in
     let next_t =
       Tvar.mk_where cx reason (fun next ->
@@ -1205,9 +1123,7 @@ let resolve_generator_next cx reason gen =
                 next;
               ]
           in
-          let t =
-            Flow_js.reposition cx ~desc:(desc_of_t t) (reason_of_t return_t |> loc_of_reason) t
-          in
+          let t = Flow_js.reposition cx (reason_of_t return_t |> loc_of_reason) t in
           Flow_js.flow_t cx (t, return_t)
       )
     in
@@ -1218,7 +1134,7 @@ let resolve cx (def_kind, id_loc) (def, def_scope_kind, class_stack, def_reason)
   Context.set_environment cx { env with Loc_env.scope_kind = def_scope_kind; class_stack };
   let (t, use_op) =
     match def with
-    | Binding b -> resolve_binding cx def_reason def_kind id_loc b
+    | Binding b -> resolve_binding cx def_reason id_loc b
     | ExpressionDef { cond_context = cond; expr; chain = true; hints = _ } ->
       resolve_chain_expression cx ~cond expr
     | ExpressionDef { cond_context = cond; expr; chain = false; hints = _ } ->
@@ -1228,9 +1144,7 @@ let resolve cx (def_kind, id_loc) (def, def_scope_kind, class_stack, def_reason)
     | Function
         {
           function_;
-          synthesizable_from_annotation =
-            (FunctionSynthesizable | FunctionPredicateSynthesizable _) as
-            synthesizable_from_annotation;
+          synthesizable_from_annotation = FunctionSynthesizable | FunctionPredicateSynthesizable _;
           arrow;
           has_this_def = _;
           function_loc;
@@ -1238,11 +1152,12 @@ let resolve cx (def_kind, id_loc) (def, def_scope_kind, class_stack, def_reason)
           statics;
           hints = _;
         } ->
+      let hook_like = Base.Option.is_some (Flow_ast_utils.hook_function function_) in
       resolve_annotated_function
         cx
-        synthesizable_from_annotation
         ~bind_this:(not arrow)
         ~statics
+        ~hook_like
         def_reason
         tparams_map
         function_loc
@@ -1266,23 +1181,22 @@ let resolve cx (def_kind, id_loc) (def, def_scope_kind, class_stack, def_reason)
         def_reason
         function_loc
         function_
-    | Class { class_; class_loc; class_implicit_this_tparam = _; this_super_write_locs = _ } ->
+    | Class { class_; class_loc; this_super_write_locs = _ } ->
       resolve_class cx id_loc def_reason class_loc class_
     | MemberAssign { member_loc = _; member = _; rhs } -> (expression cx rhs, unknown_use)
     | OpAssign { exp_loc; lhs; op; rhs } -> resolve_op_assign cx ~exp_loc def_reason lhs op rhs
     | Update { exp_loc; op = _ } -> resolve_update cx ~id_loc ~exp_loc def_reason
     | TypeAlias (loc, alias) -> resolve_type_alias cx loc alias
     | OpaqueType (loc, opaque) -> resolve_opaque_type cx loc opaque
-    | Import { import_kind; source; source_loc; import; declare_module } ->
-      resolve_import cx id_loc def_reason import_kind source source_loc import declare_module
+    | Import { import_kind; source; source_loc; import } ->
+      resolve_import cx id_loc def_reason import_kind source source_loc import
     | Interface (loc, inter) -> resolve_interface cx loc inter
     | DeclaredClass (loc, class_) -> resolve_declare_class cx loc class_
     | DeclaredComponent (loc, comp) -> resolve_declare_component cx loc comp
-    | Enum (enum_loc, enum) -> resolve_enum cx id_loc def_reason enum_loc enum
+    | Enum (enum_loc, name, enum) -> resolve_enum cx id_loc def_reason enum_loc name enum
     | TypeParam _ -> resolve_type_param cx id_loc
     | GeneratorNext gen -> resolve_generator_next cx def_reason gen
-    | DeclaredModule (loc, module_) -> resolve_declare_module cx loc module_
-    | CJSModuleExportsType state -> resolve_cjs_exports_type cx def_reason state
+    | DeclaredNamespace (loc, ns) -> resolve_declare_namespace cx loc ns
     | MissingThisAnnot -> (AnyT.at (AnyError None) id_loc, unknown_use)
   in
   let update_reason =
@@ -1307,7 +1221,7 @@ let resolve cx (def_kind, id_loc) (def, def_scope_kind, class_stack, def_reason)
 let entries_of_def graph (kind, loc) =
   let open Name_def_ordering in
   let acc = EnvSet.singleton (kind, loc) in
-  let add_from_bindings acc = function
+  let rec add_from_bindings acc = function
     | Root (UnannotatedParameter r) -> EnvSet.add (Env_api.FunctionParamLoc, loc_of_reason r) acc
     | Root (Annotation { param_loc = Some l; _ }) -> EnvSet.add (Env_api.FunctionParamLoc, l) acc
     | Root (Contextual { reason; _ }) ->
@@ -1325,12 +1239,12 @@ let entries_of_def graph (kind, loc) =
       EnvSet.add (Env_api.FunctionThisLoc, function_loc) acc
     | Root (ObjectValue { synthesizable = ObjectSynthesizable { this_write_locs }; _ }) ->
       EnvSet.union this_write_locs acc
+    | Hooklike bind -> add_from_bindings acc bind
     | Root _ -> acc
     | Select _ -> acc
   in
   match EnvMap.find (kind, loc) graph with
   | (Binding b, _, _, _) -> add_from_bindings acc b
-  | (DeclaredModule (loc, _), _, _, _) -> EnvSet.add (Env_api.CJSModuleExportsLoc, loc) acc
   | (Class { this_super_write_locs; _ }, _, _, _) -> EnvSet.union this_super_write_locs acc
   | ( Function
         {
@@ -1382,24 +1296,9 @@ let init_type_param =
         let cache = Context.node_cache cx in
         Node_cache.set_tparam cache info;
         (name, tparam, t)
-      | Class { class_loc; class_implicit_this_tparam = { tparams_map; class_tparams_loc }; _ } ->
-        let class_t = Type_env.read_class_self_type cx class_loc in
-        let (this_param, this_t) =
-          let class_tparams =
-            Base.Option.map class_tparams_loc ~f:(fun tparams_loc ->
-                ( tparams_loc,
-                  tparams_map
-                  |> ALocMap.keys
-                  |> Base.List.map ~f:(fun l ->
-                         let (_, tparam, _) = get_type_param cx graph l in
-                         tparam
-                     )
-                  |> Nel.of_list_exn
-                )
-            )
-          in
-          Statement.Class_stmt_sig.mk_this class_t cx reason class_tparams
-        in
+      | Class { class_loc; _ } ->
+        let self = Type_env.read_class_self_type cx class_loc in
+        let (this_param, this_t) = Statement.Class_stmt_sig.mk_this ~self cx reason in
         (Subst_name.Name "this", this_param, this_t)
       | _ ->
         failwith

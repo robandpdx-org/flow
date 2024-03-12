@@ -108,9 +108,10 @@ let rec default_resolve_touts ~flow ?resolve_callee cx loc u =
   | SetPropT (_, _, _, _, _, _, topt)
   | SetPrivatePropT (_, _, _, _, _, _, _, _, topt) ->
     map_opt resolve topt
-  | GetPropT (_, _, _, _, tvar)
+  | GetTypeFromNamespaceT { tout = tvar; _ }
   | GetPrivatePropT (_, _, _, _, _, tvar)
-  | TestPropT (_, _, _, _, tvar) ->
+  | GetPropT { use_op = _; reason = _; id = _; from_annot = _; propref = _; tout = tvar; hint = _ }
+  | TestPropT { use_op = _; reason = _; id = _; propref = _; tout = tvar; hint = _ } ->
     resolve_tvar tvar
   | SetElemT (_, _, _, _, _, topt) -> map_opt resolve topt
   | GetElemT { tout; _ } -> resolve_tvar tout
@@ -151,6 +152,7 @@ let rec default_resolve_touts ~flow ?resolve_callee cx loc u =
     resolve_tvar tvar
   | SpecializeT (_, _, _, _, _, tout) -> resolve tout
   | ThisSpecializeT (_, _, k) -> resolve_cont k
+  | ValueToTypeReferenceT (_, _, _, t) -> resolve t
   | VarianceCheckT _ -> ()
   | ConcretizeTypeAppsT _ -> _TODO
   | LookupT { lookup_action; _ } -> resolve_lookup_action lookup_action
@@ -161,23 +163,19 @@ let rec default_resolve_touts ~flow ?resolve_callee cx loc u =
   | ObjTestT (_, _, t)
   | ArrRestT (_, _, _, t) ->
     resolve t
-  | BecomeT { t; _ } -> resolve t
   | GetDictValuesT (_, use) -> default_resolve_touts ~flow cx loc use
   | GetKeysT (_, use) -> default_resolve_touts ~flow cx loc use
   | HasOwnPropT _ -> ()
   | GetValuesT (_, t) -> resolve t
   | ElemT (_, _, _, action) -> resolve_elem_action action
   | MakeExactT (_, k) -> resolve_cont k
-  | CJSRequireT { t_out = t; _ }
-  | ImportModuleNsT { t; _ } ->
-    resolve t
   | AssertImportIsValueT _ -> ()
   | CJSExtractNamedExportsT (_, _, t)
   | CopyNamedExportsT (_, _, t)
   | CopyTypeExportsT (_, _, t) ->
     resolve t
   | CheckUntypedImportT _ -> ()
-  | ExportNamedT (_, _, _, t)
+  | ExportNamedT { tout = t; _ }
   | ExportTypeT { tout = t; _ }
   | AssertExportIsTypeT (_, _, t)
   | MapTypeT (_, _, _, t)
@@ -207,7 +205,9 @@ let rec default_resolve_touts ~flow ?resolve_callee cx loc u =
   | EnumCastT _
   | EnumExhaustiveCheckT _ ->
     ()
-  | DeepReadOnlyT (tvar, _, _) -> resolve_tvar tvar
+  | HooklikeT tvar
+  | DeepReadOnlyT (tvar, _, _) ->
+    resolve_tvar tvar
   | ExtractReactRefT (_, t)
   | FilterOptionalT (_, t)
   | FilterMaybeT (_, t) ->

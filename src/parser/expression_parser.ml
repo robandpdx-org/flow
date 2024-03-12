@@ -5,39 +5,17 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Ast = Flow_ast
 open Token
 open Parser_env
 open Flow_ast
 open Parser_common
 open Comment_attachment
 
-module type EXPRESSION = sig
-  val assignment : env -> (Loc.t, Loc.t) Expression.t
-
-  val assignment_cover : env -> pattern_cover
-
-  val conditional : env -> (Loc.t, Loc.t) Expression.t
-
-  val is_assignable_lhs : (Loc.t, Loc.t) Expression.t -> bool
-
-  val left_hand_side : env -> (Loc.t, Loc.t) Expression.t
-
-  val number : env -> number_type -> string -> float
-
-  val bigint : env -> bigint_type -> string -> int64 option
-
-  val sequence :
-    env -> start_loc:Loc.t -> (Loc.t, Loc.t) Expression.t list -> (Loc.t, Loc.t) Expression.t
-
-  val call_type_args : env -> (Loc.t, Loc.t) Expression.CallTypeArgs.t option
-end
-
 module Expression
     (Parse : PARSER)
-    (Type : Type_parser.TYPE)
-    (Declaration : Declaration_parser.DECLARATION)
-    (Pattern_cover : Pattern_cover.COVER) : EXPRESSION = struct
+    (Type : Parser_common.TYPE)
+    (Declaration : Parser_common.DECLARATION)
+    (Pattern_cover : Parser_common.COVER) : Parser_common.EXPRESSION = struct
   type op_precedence =
     | Left_assoc of int
     | Right_assoc of int
@@ -88,6 +66,7 @@ module Expression
     | (_, Object _) ->
       true
     | (_, ArrowFunction _)
+    | (_, AsConstExpression _)
     | (_, AsExpression _)
     | (_, Assignment _)
     | (_, Binary _)
@@ -115,7 +94,7 @@ module Expression
     | (_, TemplateLiteral _)
     | (_, This _)
     | (_, TypeCast _)
-    | (_, TSTypeCast _)
+    | (_, TSSatisfies _)
     | (_, Unary _)
     | (_, Update _)
     | (_, Yield _) ->
@@ -306,6 +285,7 @@ module Expression
       true
     | (_, Array _)
     | (_, ArrowFunction _)
+    | (_, AsConstExpression _)
     | (_, AsExpression _)
     | (_, Assignment _)
     | (_, Binary _)
@@ -334,7 +314,7 @@ module Expression
     | (_, TemplateLiteral _)
     | (_, This _)
     | (_, TypeCast _)
-    | (_, TSTypeCast _)
+    | (_, TSSatisfies _)
     | (_, Unary _)
     | (_, Update _)
     | (_, Yield _) ->
@@ -556,10 +536,10 @@ module Expression
                 let loc = Loc.btwn expr_loc annot_loc in
                 Cover_expr
                   ( loc,
-                    Expression.TSTypeCast
+                    Expression.TSSatisfies
                       {
-                        Expression.TSTypeCast.expression = expr;
-                        kind = Expression.TSTypeCast.Satisfies annot;
+                        Expression.TSSatisfies.expression = expr;
+                        annot = (annot_loc, annot);
                         comments = None;
                       }
                   )
@@ -568,12 +548,8 @@ module Expression
                 Eat.token env;
                 Cover_expr
                   ( loc,
-                    Expression.TSTypeCast
-                      {
-                        Expression.TSTypeCast.expression = expr;
-                        kind = Expression.TSTypeCast.AsConst;
-                        comments = None;
-                      }
+                    Expression.AsConstExpression
+                      { Expression.AsConstExpression.expression = expr; comments = None }
                   )
               ) else
                 let ((annot_loc, _) as annot) = Type._type env in
@@ -1210,6 +1186,7 @@ module Expression
             params;
             body;
             generator;
+            hook = false (* TODO function expression hooks *);
             async;
             predicate;
             return;
@@ -1809,6 +1786,7 @@ module Expression
               async;
               generator = false;
               (* arrow functions cannot be generators *)
+              hook = false (* TODO arrow function hooks *);
               predicate;
               return;
               tparams;

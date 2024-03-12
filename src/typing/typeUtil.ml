@@ -24,17 +24,19 @@ let rec reason_of_t = function
   | ExactT (reason, _) -> reason
   | GenericT { reason; _ } -> reason
   | InternalT (ExtendsT (reason, _, _)) -> reason
+  | InternalT (EnforceUnionOptimized reason) -> reason
   | FunProtoT reason -> reason
   | FunProtoApplyT reason -> reason
   | FunProtoBindT reason -> reason
   | FunProtoCallT reason -> reason
   | KeysT (reason, _) -> reason
   | ModuleT { module_reason = reason; _ } -> reason
+  | NamespaceT { values_type; _ } -> reason_of_t values_type
   | NullProtoT reason -> reason
   | ObjProtoT reason -> reason
   | MatchingPropT (reason, _, _) -> reason
   | OpaqueT (reason, _) -> reason
-  | ThisClassT (reason, _, _, _) -> reason
+  | ThisInstanceT (reason, _, _, _) -> reason
   | ThisTypeAppT (reason, _, _, _) -> reason
   | TypeAppT { reason; _ } -> reason
   | AnyT (reason, _) -> reason
@@ -58,14 +60,12 @@ and reason_of_use_t = function
   | AssertNonComponentLikeT (_, reason) -> reason
   | AssertIterableT { reason; _ } -> reason
   | AssertImportIsValueT (reason, _) -> reason
-  | BecomeT { reason; _ } -> reason
   | BindT (_, reason, _) -> reason
   | CallElemT (_, reason, _, _, _) -> reason
   | CallLatentPredT { reason; _ } -> reason
   | CallT { reason; _ } -> reason
   | ChoiceKitUseT (reason, _) -> reason
   | CJSExtractNamedExportsT (reason, _, _) -> reason
-  | CJSRequireT { reason; _ } -> reason
   | ComparatorT { reason; _ } -> reason
   | ConstructorT { reason; _ } -> reason
   | CopyNamedExportsT (reason, _, _) -> reason
@@ -78,7 +78,7 @@ and reason_of_use_t = function
   | EnumExhaustiveCheckT { reason; _ } -> reason
   | EqT { reason; _ } -> reason
   | ConditionalT { reason; _ } -> reason
-  | ExportNamedT (reason, _, _, _) -> reason
+  | ExportNamedT { reason; _ } -> reason
   | ExportTypeT { reason; _ } -> reason
   | ImplicitVoidReturnT { reason; _ } -> reason
   | AssertExportIsTypeT (reason, _, _) -> reason
@@ -87,14 +87,14 @@ and reason_of_use_t = function
   | GetKeysT (reason, _) -> reason
   | GetValuesT (reason, _) -> reason
   | GetDictValuesT (reason, _) -> reason
-  | GetPropT (_, reason, _, _, _) -> reason
+  | GetTypeFromNamespaceT { reason; _ } -> reason
+  | GetPropT { reason; _ } -> reason
   | GetPrivatePropT (_, reason, _, _, _, _) -> reason
   | GetProtoT (reason, _) -> reason
   | GetStaticsT (reason, _) -> reason
   | GuardT (_, _, (r, _)) -> r
   | HasOwnPropT (_, reason, _) -> reason
   | ImplementsT (_, t) -> reason_of_t t
-  | ImportModuleNsT { reason; _ } -> reason
   | PreprocessKitT (reason, _) -> reason
   | InvariantT reason -> reason
   | LookupT { reason; _ } -> reason
@@ -127,17 +127,19 @@ and reason_of_use_t = function
   | StrictEqT { reason; _ } -> reason
   | ObjKitT (_, reason, _, _, _) -> reason
   | SuperT (_, reason, _) -> reason
-  | TestPropT (_, reason, _, _, _) -> reason
+  | TestPropT { reason; _ } -> reason
   | ThisSpecializeT (reason, _, _) -> reason
   | ToStringT { reason; _ } -> reason
   | UnaryArithT { reason; _ } -> reason
+  | ValueToTypeReferenceT (_, reason, _, _) -> reason
   | VarianceCheckT (reason, _, _, _) -> reason
   | TypeCastT (_, t) -> reason_of_t t
   | FilterOptionalT (_, t) -> reason_of_t t
   | ExtractReactRefT (reason, _) -> reason
   | FilterMaybeT (_, t) -> reason_of_t t
   | DeepReadOnlyT ((r, _), _, _) -> r
-  | ConcretizeTypeAppsT (_, _, (_, _, _, reason), _) -> reason
+  | HooklikeT (r, _) -> r
+  | ConcretizeTypeAppsT (_, _, (_, _, _, _, reason), _) -> reason
   | CondT (reason, _, _, _) -> reason
   | ReactPropsToOut (reason, _)
   | ReactInToProps (reason, _)
@@ -186,6 +188,7 @@ let rec mod_reason_of_t f = function
   | ExactT (reason, t) -> ExactT (f reason, t)
   | GenericT ({ reason; _ } as generic) -> GenericT { generic with reason = f reason }
   | InternalT (ExtendsT (reason, t1, t2)) -> InternalT (ExtendsT (f reason, t1, t2))
+  | InternalT (EnforceUnionOptimized reason) -> InternalT (EnforceUnionOptimized (f reason))
   | FunProtoApplyT reason -> FunProtoApplyT (f reason)
   | FunProtoT reason -> FunProtoT (f reason)
   | FunProtoBindT reason -> FunProtoBindT (f reason)
@@ -199,14 +202,16 @@ let rec mod_reason_of_t f = function
         module_is_strict;
         module_available_platforms;
       }
+  | NamespaceT { values_type; types_tmap } ->
+    NamespaceT { values_type = mod_reason_of_t f values_type; types_tmap }
   | NullProtoT reason -> NullProtoT (f reason)
   | ObjProtoT reason -> ObjProtoT (f reason)
   | MatchingPropT (reason, k, v) -> MatchingPropT (f reason, k, v)
   | OpaqueT (reason, opaquetype) -> OpaqueT (f reason, opaquetype)
-  | ThisClassT (reason, t, is_this, this_name) -> ThisClassT (f reason, t, is_this, this_name)
+  | ThisInstanceT (reason, t, is_this, this_name) -> ThisInstanceT (f reason, t, is_this, this_name)
   | ThisTypeAppT (reason, t1, t2, t3) -> ThisTypeAppT (f reason, t1, t2, t3)
-  | TypeAppT { reason; use_op; type_; targs; use_desc } ->
-    TypeAppT { reason = f reason; use_op; type_; targs; use_desc }
+  | TypeAppT { reason; use_op; type_; targs; from_value; use_desc } ->
+    TypeAppT { reason = f reason; use_op; type_; targs; from_value; use_desc }
 
 and mod_reason_of_defer_use_t f = function
   | TypeDestructorT (use_op, reason, s) -> TypeDestructorT (use_op, f reason, s)
@@ -253,7 +258,6 @@ and mod_reason_of_use_t f = function
   | AssertIterableT ({ reason; _ } as contents) ->
     AssertIterableT { contents with reason = f reason }
   | AssertImportIsValueT (reason, name) -> AssertImportIsValueT (f reason, name)
-  | BecomeT { reason; t; empty_success } -> BecomeT { reason = f reason; t; empty_success }
   | BindT (use_op, reason, ft) -> BindT (use_op, f reason, ft)
   | CallElemT (use_op, reason_call, reason_lookup, t, action) ->
     CallElemT (use_op, f reason_call, reason_lookup, t, action)
@@ -263,8 +267,6 @@ and mod_reason_of_use_t f = function
     CallT { use_op; reason = f reason; call_action; return_hint }
   | ChoiceKitUseT (reason, tool) -> ChoiceKitUseT (f reason, tool)
   | CJSExtractNamedExportsT (reason, exports, t2) -> CJSExtractNamedExportsT (f reason, exports, t2)
-  | CJSRequireT { reason; t_out; is_strict; legacy_interop } ->
-    CJSRequireT { reason = f reason; t_out; is_strict; legacy_interop }
   | ComparatorT ({ reason; _ } as x) -> ComparatorT { x with reason = f reason }
   | ConstructorT { use_op; reason; targs; args; tout; return_hint } ->
     ConstructorT { use_op; reason = f reason; targs; args; tout; return_hint }
@@ -294,8 +296,8 @@ and mod_reason_of_use_t f = function
         false_t;
         tout;
       }
-  | ExportNamedT (reason, tmap, export_kind, t_out) ->
-    ExportNamedT (f reason, tmap, export_kind, t_out)
+  | ExportNamedT { reason; value_exports_tmap; type_exports_tmap; export_kind; tout } ->
+    ExportNamedT { reason = f reason; value_exports_tmap; type_exports_tmap; export_kind; tout }
   | ExportTypeT { reason; name_loc; preferred_def_locs; export_name; target_module_t; tout } ->
     ExportTypeT
       { reason = f reason; name_loc; preferred_def_locs; export_name; target_module_t; tout }
@@ -308,7 +310,10 @@ and mod_reason_of_use_t f = function
   | GetKeysT (reason, t) -> GetKeysT (f reason, t)
   | GetValuesT (reason, t) -> GetValuesT (f reason, t)
   | GetDictValuesT (reason, t) -> GetDictValuesT (f reason, t)
-  | GetPropT (use_op, reason, id, n, t) -> GetPropT (use_op, f reason, id, n, t)
+  | GetTypeFromNamespaceT { use_op; reason; prop_ref; tout } ->
+    GetTypeFromNamespaceT { use_op; reason = f reason; prop_ref; tout }
+  | GetPropT { use_op; reason; id; from_annot; propref; tout; hint } ->
+    GetPropT { use_op; reason = f reason; id; from_annot; propref; tout; hint }
   | GetPrivatePropT (use_op, reason, name, bindings, static, t) ->
     GetPrivatePropT (use_op, f reason, name, bindings, static, t)
   | GetProtoT (reason, t) -> GetProtoT (f reason, t)
@@ -316,7 +321,6 @@ and mod_reason_of_use_t f = function
   | GuardT (pred, result, (reason, tvar)) -> GuardT (pred, result, (f reason, tvar))
   | HasOwnPropT (use_op, reason, t) -> HasOwnPropT (use_op, f reason, t)
   | ImplementsT (use_op, t) -> ImplementsT (use_op, mod_reason_of_t f t)
-  | ImportModuleNsT { reason; t; is_strict } -> ImportModuleNsT { reason = f reason; t; is_strict }
   | PreprocessKitT (reason, tool) -> PreprocessKitT (f reason, tool)
   | InvariantT reason -> InvariantT (f reason)
   | LookupT
@@ -380,18 +384,22 @@ and mod_reason_of_use_t f = function
   | ObjKitT (use_op, reason, resolve_tool, tool, tout) ->
     ObjKitT (use_op, f reason, resolve_tool, tool, tout)
   | SuperT (op, reason, inst) -> SuperT (op, f reason, inst)
-  | TestPropT (op, reason, id, n, t) -> TestPropT (op, f reason, id, n, t)
+  | TestPropT { use_op; reason; id; propref; tout; hint } ->
+    TestPropT { use_op; reason = f reason; id; propref; tout; hint }
   | ThisSpecializeT (reason, this, k) -> ThisSpecializeT (f reason, this, k)
   | ToStringT { orig_t; reason; t_out } -> ToStringT { orig_t; reason = f reason; t_out }
   | UnaryArithT { reason; result_t; kind } -> UnaryArithT { reason = f reason; result_t; kind }
+  | ValueToTypeReferenceT (use_op, reason, kind, tout) ->
+    ValueToTypeReferenceT (use_op, f reason, kind, tout)
   | VarianceCheckT (reason, tparams, targs, polarity) ->
     VarianceCheckT (f reason, tparams, targs, polarity)
   | TypeCastT (use_op, t) -> TypeCastT (use_op, mod_reason_of_t f t)
   | FilterOptionalT (use_op, t) -> FilterOptionalT (use_op, mod_reason_of_t f t)
   | FilterMaybeT (use_op, t) -> FilterMaybeT (use_op, mod_reason_of_t f t)
   | DeepReadOnlyT ((r, i), rr, dro) -> DeepReadOnlyT ((f r, i), rr, dro)
-  | ConcretizeTypeAppsT (use_op, t1, (t2, ts2, op2, r2), targs) ->
-    ConcretizeTypeAppsT (use_op, t1, (t2, ts2, op2, f r2), targs)
+  | HooklikeT (r, i) -> HooklikeT (f r, i)
+  | ConcretizeTypeAppsT (use_op, t1, (t2, ts2, b, op2, r2), targs) ->
+    ConcretizeTypeAppsT (use_op, t1, (t2, ts2, b, op2, f r2), targs)
   | CondT (reason, then_t, else_t, tout) -> CondT (f reason, then_t, else_t, tout)
   | ReactPropsToOut (reason, t) -> ReactPropsToOut (f reason, t)
   | ReactInToProps (reason, t) -> ReactInToProps (f reason, t)
@@ -409,10 +417,12 @@ and mod_reason_of_opt_use_t f = function
   | OptMethodT (op, r1, r2, ref, action) -> OptMethodT (op, f r1, r2, ref, action)
   | OptPrivateMethodT (op, r1, r2, props, cbs, static, action) ->
     OptPrivateMethodT (op, f r1, r2, props, cbs, static, action)
-  | OptGetPropT (use_op, reason, id, n) -> OptGetPropT (use_op, f reason, id, n)
+  | OptGetPropT { use_op; reason; id; propref; hint } ->
+    OptGetPropT { use_op; reason = f reason; id; propref; hint }
   | OptGetPrivatePropT (use_op, reason, name, bindings, static) ->
     OptGetPrivatePropT (use_op, f reason, name, bindings, static)
-  | OptTestPropT (use_op, reason, id, n) -> OptTestPropT (use_op, f reason, id, n)
+  | OptTestPropT (use_op, reason, test_prop_id, propref, hint) ->
+    OptTestPropT (use_op, f reason, test_prop_id, propref, hint)
   | OptGetElemT (use_op, reason, id, annot, it) -> OptGetElemT (use_op, f reason, id, annot, it)
   | OptCallElemT (use_op, r1, r2, elt, call) -> OptCallElemT (use_op, f r1, r2, elt, call)
 
@@ -453,8 +463,10 @@ let rec util_use_op_of_use_t :
   | SetPropT (op, r, p, m, w, t, tp) -> util op (fun op -> SetPropT (op, r, p, m, w, t, tp))
   | SetPrivatePropT (op, r, s, m, c, b, x, t, tp) ->
     util op (fun op -> SetPrivatePropT (op, r, s, m, c, b, x, t, tp))
-  | GetPropT (op, r, id, p, t) -> util op (fun op -> GetPropT (op, r, id, p, t))
-  | TestPropT (op, r, id, p, t) -> util op (fun op -> TestPropT (op, r, id, p, t))
+  | GetTypeFromNamespaceT { use_op; reason; prop_ref; tout } ->
+    util use_op (fun use_op -> GetTypeFromNamespaceT { use_op; reason; prop_ref; tout })
+  | GetPropT ({ use_op; _ } as x) -> util use_op (fun use_op -> GetPropT { x with use_op })
+  | TestPropT ({ use_op; _ } as x) -> util use_op (fun use_op -> TestPropT { x with use_op })
   | GetPrivatePropT (op, r, s, c, b, t) -> util op (fun op -> GetPrivatePropT (op, r, s, c, b, t))
   | SetElemT (op, r, t1, m, t2, t3) -> util op (fun op -> SetElemT (op, r, t1, m, t2, t3))
   | GetElemT ({ use_op; _ } as x) -> util use_op (fun use_op -> GetElemT { x with use_op })
@@ -477,8 +489,8 @@ let rec util_use_op_of_use_t :
     util use_op (fun use_op -> ImplicitVoidReturnT { contents with use_op })
   | FilterOptionalT (op, t) -> util op (fun op -> FilterOptionalT (op, t))
   | FilterMaybeT (op, t) -> util op (fun op -> FilterMaybeT (op, t))
-  | ConcretizeTypeAppsT (u, (ts1, op, r1), x2, b) ->
-    util op (fun op -> ConcretizeTypeAppsT (u, (ts1, op, r1), x2, b))
+  | ConcretizeTypeAppsT (u, (ts1, b1, op, r1), x2, b2) ->
+    util op (fun op -> ConcretizeTypeAppsT (u, (ts1, b1, op, r1), x2, b2))
   | ArrRestT (op, r, i, t) -> util op (fun op -> ArrRestT (op, r, i, t))
   | HasOwnPropT (op, r, t) -> util op (fun op -> HasOwnPropT (op, r, t))
   | GetKeysT (r, u2) -> nested_util u2 (fun u2 -> GetKeysT (r, u2))
@@ -498,6 +510,8 @@ let rec util_use_op_of_use_t :
     util use_op (fun use_op -> PromoteRendersRepresentationT { contents with use_op })
   | TryRenderTypePromotionT ({ use_op; _ } as contents) ->
     util use_op (fun use_op -> TryRenderTypePromotionT { contents with use_op })
+  | ValueToTypeReferenceT (use_op, reason, kind, t) ->
+    util use_op (fun use_op -> ValueToTypeReferenceT (use_op, reason, kind, t))
   | MakeExactT (_, _)
   | CallElemT (_, _, _, _, _)
   | GetStaticsT (_, _)
@@ -510,6 +524,7 @@ let rec util_use_op_of_use_t :
   | ConvertEmptyPropsToMixedT _
   | AssertBinaryInRHST _
   | DeepReadOnlyT _
+  | HooklikeT _
   | AssertForInRHST _
   | AssertInstanceofRHST _
   | AssertNonComponentLikeT _
@@ -527,16 +542,14 @@ let rec util_use_op_of_use_t :
   | ObjRestT (_, _, _, _)
   | ObjTestProtoT (_, _)
   | ObjTestT (_, _, _)
-  | BecomeT { reason = _; t = _; empty_success = _ }
   | GetValuesT (_, _)
-  | CJSRequireT _
-  | ImportModuleNsT { reason = _; t = _; is_strict = _ }
   | AssertImportIsValueT (_, _)
   | CJSExtractNamedExportsT (_, _, _)
   | CopyNamedExportsT (_, _, _)
   | CopyTypeExportsT (_, _, _)
   | CheckUntypedImportT (_, _)
-  | ExportNamedT (_, _, _, _)
+  | ExportNamedT
+      { reason = _; value_exports_tmap = _; type_exports_tmap = _; export_kind = _; tout = _ }
   | ExportTypeT
       {
         reason = _;
@@ -882,10 +895,6 @@ let class_type ?(structural = false) ?annot_loc t =
   in
   DefT (reason, ClassT t)
 
-let this_class_type t is_this this_name =
-  let reason = update_desc_new_reason (fun desc -> RClass desc) (reason_of_t t) in
-  ThisClassT (reason, t, is_this, this_name)
-
 let extends_type r l u =
   let reason = update_desc_reason (fun desc -> RExtends desc) r in
   InternalT (ExtendsT (reason, l, u))
@@ -911,19 +920,19 @@ let poly_type_of_tparams id tparams t =
   | None -> t
   | Some (tparams_loc, tparams_nel) -> poly_type id tparams_loc tparams_nel t
 
-let typeapp_with_use_op ~use_desc reason use_op t targs =
+let typeapp_with_use_op ~from_value ~use_desc reason use_op t targs =
   let reason = replace_desc_reason (RTypeApp (desc_of_t t)) reason in
-  TypeAppT { reason; use_op; type_ = t; targs; use_desc }
+  TypeAppT { reason; use_op; type_ = t; targs; from_value; use_desc }
 
-let typeapp ~use_desc reason t targs =
+let typeapp ~from_value ~use_desc reason t targs =
   let use_op = Op (TypeApplication { type_ = reason }) in
-  typeapp_with_use_op ~use_desc reason use_op t targs
+  typeapp_with_use_op ~from_value ~use_desc reason use_op t targs
 
-let typeapp_annot ~use_desc loc t targs =
+let typeapp_annot ~from_value ~use_desc loc t targs =
   let desc = RTypeApp (desc_of_t t) in
   let reason = mk_annot_reason desc loc in
   let use_op = Op (TypeApplication { type_ = reason }) in
-  TypeAppT { reason; use_op; type_ = t; targs; use_desc }
+  TypeAppT { reason; use_op; type_ = t; targs; from_value; use_desc }
 
 (* An implicit typeapp is not a product of some source level type application,
  * but merely a tool for some other functionality, e.g.
@@ -936,7 +945,7 @@ let implicit_typeapp ?annot_loc t targs =
     | None -> reason
   in
   let use_op = Op (TypeApplication { type_ = reason }) in
-  TypeAppT { reason; use_op; type_ = t; targs; use_desc = false }
+  TypeAppT { reason; use_op; type_ = t; targs; from_value = false; use_desc = false }
 
 let this_typeapp ?annot_loc t this targs =
   let reason =
@@ -950,6 +959,16 @@ let this_typeapp ?annot_loc t this targs =
     | None -> reason
   in
   ThisTypeAppT (reason, t, this, targs)
+
+let typeof_annotation reason t targs =
+  let annot_loc = loc_of_reason reason in
+  let t = AnnotT (opt_annot_reason ~annot_loc reason, t, false) in
+  match targs with
+  | None -> t
+  | Some targs ->
+    let reason_tapp = mk_annot_reason (RTypeApp (desc_of_reason reason)) annot_loc in
+    let use_op = Op (TypeApplication { type_ = reason_tapp }) in
+    typeapp_with_use_op ~from_value:true ~use_desc:false reason use_op t targs
 
 let push_type_alias_reason r t =
   match desc_of_reason ~unwrap:false r with
@@ -970,7 +989,8 @@ let rec eq_predicate (p1, p2) =
   | (StrP _, StrP _)
   | (SymbolP _, SymbolP _)
   | (VoidP, VoidP)
-  | (ArrP, ArrP) ->
+  | (ArrP, ArrP)
+  | (NoP, NoP) ->
     true
   (* Recursive *)
   | (AndP (p1a, p1b), AndP (p2a, p2b)) -> eq_predicate (p1a, p2a) && eq_predicate (p1b, p2b)

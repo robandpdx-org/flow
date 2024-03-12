@@ -855,6 +855,7 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
       async = async1;
       generator = generator1;
       predicate = predicate1;
+      hook = hook1;
       return = return1;
       tparams = tparams1;
       sig_loc = _;
@@ -868,6 +869,7 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
       body = body2;
       async = async2;
       generator = generator2;
+      hook = hook2;
       predicate = predicate2;
       return = return2;
       tparams = tparams2;
@@ -876,7 +878,8 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
     } =
       func2
     in
-    if async1 != async2 || generator1 != generator2 || predicate1 != predicate2 then
+    if async1 != async2 || generator1 != generator2 || predicate1 != predicate2 || hook1 != hook2
+    then
       None
     else
       let id = diff_if_changed_nonopt_fn identifier id1 id2 in
@@ -1423,7 +1426,7 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
       | ((loc, TypeCast t1), (_, TypeCast t2)) -> Some (type_cast loc t1 t2)
       | ((loc, Logical l1), (_, Logical l2)) -> logical loc l1 l2
       | ((loc, Array arr1), (_, Array arr2)) -> array loc arr1 arr2
-      | ((_, (AsExpression _ | TSTypeCast _)), (_, TypeCast _)) -> None
+      | ((_, (AsExpression _ | TSSatisfies _)), (_, TypeCast _)) -> None
       | (expr, (loc, TypeCast t2)) -> Some (type_cast_added parent expr loc t2)
       | ((loc, Update update1), (_, Update update2)) -> update loc update1 update2
       | ((loc, Sequence seq1), (_, Sequence seq2)) -> sequence loc seq1 seq2
@@ -2823,6 +2826,7 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
       return = return1;
       tparams = tparams1;
       comments = func_comments1;
+      hook = hook1;
     } =
       ft1
     in
@@ -2832,28 +2836,32 @@ let program (program1 : (Loc.t, Loc.t) Ast.Program.t) (program2 : (Loc.t, Loc.t)
       return = return2;
       tparams = tparams2;
       comments = func_comments2;
+      hook = hook2;
     } =
       ft2
     in
-    let tparams_diff = diff_if_changed_opt type_params tparams1 tparams2 in
-    let this_diff = diff_if_changed_opt function_this_constraint_type this1 this2 in
-    let params_diff = diff_and_recurse_no_trivial function_param_type params1 params2 in
-    let rest_diff = diff_if_changed_opt function_rest_param_type rest1 rest2 in
-    let return_diff =
-      diff_if_changed function_type_return_annotation return1 return2 |> Base.Option.return
-    in
-    let func_comments_diff = syntax_opt loc func_comments1 func_comments2 in
-    let params_comments_diff = syntax_opt params_loc params_comments1 params_comments2 in
-    join_diff_list
-      [
-        tparams_diff;
-        this_diff;
-        params_diff;
-        rest_diff;
-        return_diff;
-        func_comments_diff;
-        params_comments_diff;
-      ]
+    if hook1 != hook2 then
+      None
+    else
+      let tparams_diff = diff_if_changed_opt type_params tparams1 tparams2 in
+      let this_diff = diff_if_changed_opt function_this_constraint_type this1 this2 in
+      let params_diff = diff_and_recurse_no_trivial function_param_type params1 params2 in
+      let rest_diff = diff_if_changed_opt function_rest_param_type rest1 rest2 in
+      let return_diff =
+        diff_if_changed function_type_return_annotation return1 return2 |> Base.Option.return
+      in
+      let func_comments_diff = syntax_opt loc func_comments1 func_comments2 in
+      let params_comments_diff = syntax_opt params_loc params_comments1 params_comments2 in
+      join_diff_list
+        [
+          tparams_diff;
+          this_diff;
+          params_diff;
+          rest_diff;
+          return_diff;
+          func_comments_diff;
+          params_comments_diff;
+        ]
   and nullable_type
       (loc : Loc.t)
       (t1 : (Loc.t, Loc.t) Ast.Type.Nullable.t)

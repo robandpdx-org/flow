@@ -1452,26 +1452,21 @@ module.exports = {
         content: 'declare module A { declare module B {} }',
         explanation: "We realize the error as soon as we see the B",
         expected_differences: {
-          'root.errors.0.column': {
-            type: 'Wrong error column',
-            expected: 19,
-            actual: '34-35'
+          'root.errors': {
+            type: 'Flow found no error',
+            expected: 'Line 1: Unexpected identifier',
+            actual: undefined,
           },
-          'root.errors.0.message': {
-            type: 'Wrong error message',
-            expected: 'Unexpected identifier',
-            actual: 'Unexpected identifier, expected the token `.`'
-          }
         }
       },
       {
         content: 'declare module A { export default 1 +1; }',
         explanation: 'export is no longer a future reserved word',
         expected_differences: {
-            'root.errors.0.message': {
-              type: 'Wrong error message',
-              expected: 'Unexpected reserved word',
-              actual: 'Unexpected token `export`, expected the token `declare`',
+            'root.errors': {
+              type: 'Flow found no error',
+              expected: 'Line 1: Unexpected reserved word',
+              actual: undefined,
             },
         },
       },

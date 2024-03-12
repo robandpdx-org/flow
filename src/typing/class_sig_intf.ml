@@ -154,33 +154,21 @@ module type S = sig
     t ->
     t
 
-  (** Check if this signature defines a given field *)
-  val mem_field : string -> static:bool -> t -> bool
-
   (** Check if this signature defines a constructor *)
   val mem_constructor : t -> bool
 
-  val mk_this :
-    Type.t -> (* self *)
-              Context.t -> Reason.t -> Type.typeparams -> Type.typeparam * Type.t
-
-  val this_or_mixed_of_t : static:bool -> t -> Type.t
+  val mk_this : self:Type.t -> Context.t -> Reason.t -> Type.typeparam * Type.t
 
   val fields_to_prop_map : Context.t -> field' SMap.t -> Type.Properties.id
 
   (** 1. Manipulation *)
 
-  (** Emits constraints to ensure the signature is compatible with its declared
-      interface implementations (classes) *)
-  val check_implements : Context.t -> Reason.reason -> t -> unit
-
-  (** Emits constraints to ensure the signature is compatible with its declared
-      superclass (classes) or extends/mixins (interfaces) *)
-  val check_super : Context.t -> Reason.reason -> t -> unit
-
-  (** Emits constraints to ensure that the signature's methods are compatible
-      with its type **)
-  val check_methods : Context.t -> Reason.reason -> t -> unit
+  (** Register checks to ensure that
+   * - the signature is compatible with its declared interface implementations (classes)
+   * - the signature is compatible with its declared superclass (classes) or extends/mixins (interfaces)
+   * - the signature's methods are compatible with its type
+   *)
+  val check_signature_compatibility : Context.t -> Reason.reason -> t -> unit
 
   val make_thises : Context.t -> t -> Type.t * Type.t * Type.t * Type.t
 
@@ -195,10 +183,4 @@ module type S = sig
      class and the second type is the external view--which differ because the internal view can be
      comparible with `this`, while the external view shouldn't be. *)
   val classtype : Context.t -> ?check_polarity:bool -> t -> Type.t * Type.t
-
-  module This : sig
-    val is_bound_to_empty : t -> bool
-
-    val in_class : (ALoc.t, ALoc.t) Flow_ast.Class.t -> bool
-  end
 end

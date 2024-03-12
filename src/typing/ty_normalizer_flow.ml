@@ -15,7 +15,7 @@ module Normalizer = Ty_normalizer.Make (struct
   let eval cx ~should_eval ~cont ~default ~non_eval (t, d, id) =
     let (Type.TypeDestructorT (use_op, reason, d)) = d in
     if should_eval then
-      let (_, tout) = Flow_js.mk_type_destructor cx use_op reason t d id in
+      let tout = Flow_js.mk_type_destructor cx use_op reason t d id in
       match Lookahead.peek cx tout with
       | Lookahead.LowerBounds [t] -> cont t
       | _ -> default tout
@@ -36,29 +36,26 @@ module Normalizer = Ty_normalizer.Make (struct
     else
       default ()
 
-  let typeapp cx ~cont ~type_:_ ~app:_ reason t targs =
+  let typeapp cx ~cont ~type_:_ ~app:_ ~from_value reason t targs =
     let t =
       Flow_js.mk_typeapp_instance_annot
         cx
         ~use_op:Type.unknown_use
         ~reason_op:reason
         ~reason_tapp:reason
+        ~from_value
         t
         targs
     in
     cont t
 
-  let builtin cx ~cont reason name =
-    let t = Flow_js.get_builtin cx (OrdinaryName name) reason in
-    cont t
-
   let builtin_type cx ~cont reason name =
-    let t = Flow_js.get_builtin_type cx reason (OrdinaryName name) in
+    let t = Flow_js.get_builtin_type cx reason name in
     cont t
 
   let builtin_typeapp cx ~cont ~type_:_ ~app:_ reason name targs =
-    let t = Flow_js.get_builtin cx (OrdinaryName name) reason in
-    let t = TypeUtil.typeapp ~use_desc:false reason t targs in
+    let t = Flow_js_utils.lookup_builtin_type cx name reason in
+    let t = TypeUtil.typeapp ~from_value:false ~use_desc:false reason t targs in
     cont t
 end)
 
@@ -104,12 +101,15 @@ let from_types ~options ~genv ts =
   in
   result
 
-let from_scheme ~options ~genv scheme =
+let from_scheme_with_found_computed_type ~options ~genv scheme =
   print_normalizer_banner options;
   let imported_names = run_imports ~options ~genv in
   let { Type.TypeScheme.tparams_rev; type_ = t } = scheme in
-  let (result, _) = run_type ~options ~genv ~imported_names ~tparams_rev State.empty t in
-  result
+  let (result, state) = run_type ~options ~genv ~imported_names ~tparams_rev State.empty t in
+  (result, State.found_computed_type state)
+
+let from_scheme ~options ~genv scheme =
+  fst (from_scheme_with_found_computed_type ~options ~genv scheme)
 
 let from_type ~options ~genv t =
   print_normalizer_banner options;
@@ -141,8 +141,10 @@ let debug_string_of_t cx t =
       { Flow_ast.Program.statements = []; interpreter = None; comments = None; all_comments = [] }
     )
   in
-  let file_sig = { File_sig.requires = []; module_kind = File_sig.ES } in
-  let genv = Ty_normalizer_env.mk_genv ~cx ~file:(Context.file cx) ~file_sig ~typed_ast in
+  let file_sig = File_sig.empty in
+  let genv =
+    Ty_normalizer_env.mk_genv ~cx ~file:(Context.file cx) ~file_sig ~typed_ast_opt:(Some typed_ast)
+  in
   match from_type ~options:Ty_normalizer_env.default_options ~genv t with
   | Error (e, _) -> Utils_js.spf "<Error %s>" (Ty_normalizer.error_kind_to_string e)
   | Ok elt -> Ty_printer.string_of_elt_single_line ~exact_by_default:true elt

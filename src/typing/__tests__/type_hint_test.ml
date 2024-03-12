@@ -29,13 +29,14 @@ let metadata =
     babel_loose_array_spread = false;
     casting_syntax = Options.CastingSyntax.Colon;
     component_syntax = true;
-    component_syntax_includes = [];
+    hooklike_functions_includes = [];
+    hooklike_functions = true;
     react_rules = [];
     react_rules_always = false;
+    enable_as_const = false;
     enable_const_params = false;
     enable_enums = true;
     enable_relay_integration = false;
-    enforce_strict_call_arity = true;
     exact_by_default = true;
     facebook_fbs = None;
     facebook_fbt = None;
@@ -46,18 +47,19 @@ let metadata =
     max_trace_depth = 0;
     max_workers = 0;
     missing_module_generators = [];
+    namespaces = false;
     react_runtime = Options.ReactRuntimeClassic;
     recursion_limit = 10000;
+    relay_integration_esmodules = false;
     relay_integration_excludes = [];
     relay_integration_module_prefix = None;
     relay_integration_module_prefix_includes = [];
-    renders_type_validation = false;
-    renders_type_validation_includes = [];
     root = File_path.dummy_path;
     strict_es6_import_export = false;
     strict_es6_import_export_excludes = [];
     strip_root = true;
     suppress_types = SSet.empty;
+    ts_syntax = true;
     use_mixed_in_catch_variables = false;
   }
 
@@ -94,7 +96,7 @@ end = struct
     Ast_loc_utils.loc_to_aloc_mapper#type_annotation t
 
   module Statement = Fix_statement.Statement_
-  module Annot = Type_annotation.Make (Type_annotation.FlowJS) (Statement)
+  module Annot = Type_annotation.Make (Type_annotation_cons_gen.FlowJS) (Statement)
   module NameResolver = Name_resolver.Make (Context) (Flow_js_utils)
 
   let parse cx content =
@@ -193,6 +195,8 @@ end = struct
         exact_by_default = true;
         enable_enums = true;
         enable_component_syntax = true;
+        enable_ts_syntax = true;
+        hooklike_functions = true;
         casting_syntax = Options.CastingSyntax.Both;
         for_builtins = true;
         locs_to_dirtify = [];
@@ -244,6 +248,7 @@ let fun_t ~params ~return_t =
             return_t;
             predicate = None;
             def_reason = dummy_reason;
+            hook = AnyHook;
           }
         )
     )
@@ -632,7 +637,7 @@ let eval_hint_tests =
           [Decomp_FuncParam ([None], 0, None); Decomp_JsxRef];
     "jsx_fragment_ref"
     >:: mk_eval_hint_test_with_type_setup
-          ~expected:"void | React$Node"
+          ~expected:"void"
           "declare var Fragment: React$FragmentType; Fragment"
           [Decomp_ObjProp "children"; Decomp_JsxProps];
   ]

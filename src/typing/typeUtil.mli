@@ -71,8 +71,6 @@ val make_exact_object : reason_obj:reason -> Type.objtype -> reason_op:reason ->
 
 val class_type : ?structural:bool -> ?annot_loc:ALoc.t -> Type.t -> Type.t
 
-val this_class_type : Type.t -> bool -> Subst_name.t -> Type.t
-
 val extends_type : reason -> Type.t -> Type.t -> Type.t
 
 val extends_use_type : Type.use_op -> Type.t -> Type.t -> Type.use_t
@@ -83,15 +81,18 @@ val poly_type_of_tparam_list : Type.Poly.id -> ALoc.t -> Type.typeparam list -> 
 
 val poly_type_of_tparams : Type.Poly.id -> Type.typeparams -> Type.t -> Type.t
 
-val typeapp_with_use_op : use_desc:bool -> reason -> Type.use_op -> Type.t -> Type.t list -> Type.t
+val typeapp_with_use_op :
+  from_value:bool -> use_desc:bool -> reason -> Type.use_op -> Type.t -> Type.t list -> Type.t
 
-val typeapp : use_desc:bool -> reason -> Type.t -> Type.t list -> Type.t
+val typeapp : from_value:bool -> use_desc:bool -> reason -> Type.t -> Type.t list -> Type.t
 
-val typeapp_annot : use_desc:bool -> ALoc.t -> Type.t -> Type.t list -> Type.t
+val typeapp_annot : from_value:bool -> use_desc:bool -> ALoc.t -> Type.t -> Type.t list -> Type.t
 
 val implicit_typeapp : ?annot_loc:ALoc.t -> Type.t -> Type.t list -> Type.t
 
 val this_typeapp : ?annot_loc:ALoc.t -> Type.t -> Type.t -> Type.t list option -> Type.t
+
+val typeof_annotation : reason -> Type.t -> Type.t list option -> Type.t
 
 val push_type_alias_reason : reason -> Type.t -> Type.t
 

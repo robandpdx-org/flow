@@ -145,6 +145,7 @@ let function_like = function
 
 let object_like = function
   | DefT (_, (ObjT _ | InstanceT _))
+  | ThisInstanceT _
   | ObjProtoT _
   | FunProtoT _
   | AnyT _ ->
@@ -358,9 +359,9 @@ let error_message_kind_of_lower = function
     None
 
 let error_message_kind_of_upper = function
-  | GetPropT (_, _, _, Named { reason; name; _ }, _) ->
+  | GetPropT { propref = Named { reason; name; _ }; _ } ->
     Error_message.IncompatibleGetPropT (loc_of_reason reason, Some name)
-  | GetPropT (_, _, _, Computed t, _) -> Error_message.IncompatibleGetPropT (loc_of_t t, None)
+  | GetPropT { propref = Computed t; _ } -> Error_message.IncompatibleGetPropT (loc_of_t t, None)
   | GetPrivatePropT (_, _, _, _, _, _) -> Error_message.IncompatibleGetPrivatePropT
   | SetPropT (_, _, Named { reason; name; _ }, _, _, _, _) ->
     Error_message.IncompatibleSetPropT (loc_of_reason reason, Some name)
@@ -601,7 +602,7 @@ let generic_of_tparam cx ~f { bound; name; reason = param_reason; is_this = _; _
         opt_annot_reason ?annot_loc @@ mk_reason desc param_loc)
       bound
   in
-  GenericT { reason = param_reason; name; id; bound }
+  GenericT { reason = param_reason; name; id; bound; no_infer = false }
 
 let generic_bound cx prev_map ({ name; _ } as tparam) =
   let generic = generic_of_tparam cx ~f:(subst cx prev_map) tparam in
@@ -701,7 +702,7 @@ let emit_cacheable_env_error cx loc err =
   in
   add_output cx err
 
-let lookup_builtin_strict_error cx x reason =
+let lookup_builtin_error cx x reason =
   let potential_generator =
     Context.missing_module_generators cx
     |> Base.List.find ~f:(fun (pattern, _) -> Str.string_match pattern (uninternal_name x) 0)
@@ -715,9 +716,17 @@ let lookup_builtin_strict_error cx x reason =
         )
     )
 
-let lookup_builtin_strict_result cx x reason =
+let lookup_builtin_value_result cx x reason =
   let builtins = Context.builtins cx in
-  Builtins.get_builtin builtins x ~on_missing:(fun () -> lookup_builtin_strict_error cx x reason)
+  match Builtins.get_builtin_value_opt builtins x with
+  | Some t -> Ok (TypeUtil.mod_reason_of_t (Base.Fn.const reason) t)
+  | None -> lookup_builtin_error cx (OrdinaryName x) reason
+
+let lookup_builtin_type_result cx x reason =
+  let builtins = Context.builtins cx in
+  match Builtins.get_builtin_type_opt builtins x with
+  | Some t -> Ok (TypeUtil.mod_reason_of_t (Base.Fn.const reason) t)
+  | None -> lookup_builtin_error cx (OrdinaryName x) reason
 
 let apply_env_errors cx loc = function
   | Ok t -> t
@@ -725,24 +734,35 @@ let apply_env_errors cx loc = function
     Nel.iter (emit_cacheable_env_error cx loc) errs;
     t
 
-let lookup_builtin_strict cx x reason =
-  lookup_builtin_strict_result cx x reason |> apply_env_errors cx (loc_of_reason reason)
+let lookup_builtin_value cx x reason =
+  lookup_builtin_value_result cx x reason |> apply_env_errors cx (loc_of_reason reason)
 
-let lookup_builtin_with_default cx x default =
-  let builtins = Context.builtins cx in
-  let builtin = Builtins.get_builtin builtins x ~on_missing:(fun () -> Ok default) in
-  Base.Result.ok_exn builtin
+let lookup_builtin_type cx x reason =
+  lookup_builtin_type_result cx x reason |> apply_env_errors cx (loc_of_reason reason)
 
-let lookup_builtin_opt cx x =
+let lookup_builtin_value_opt cx x =
   let builtins = Context.builtins cx in
-  Builtins.get_builtin_opt builtins x
+  Builtins.get_builtin_value_opt builtins x
+
+let lookup_builtin_type_opt cx x =
+  let builtins = Context.builtins cx in
+  Builtins.get_builtin_type_opt builtins x
 
 let lookup_builtin_typeapp cx reason x targs =
-  let t = lookup_builtin_strict cx x reason in
-  typeapp ~use_desc:false reason t targs
+  let t = lookup_builtin_type cx x reason in
+  typeapp ~from_value:false ~use_desc:false reason t targs
+
+let get_builtin_module cx module_name reason =
+  let builtins = Context.builtins cx in
+  let result =
+    match Builtins.get_builtin_module_opt builtins module_name with
+    | Some t -> Ok t
+    | None -> lookup_builtin_error cx (InternalModuleName module_name) reason
+  in
+  apply_env_errors cx (loc_of_reason reason) result
 
 let builtin_promise_class_id cx =
-  let promise_t = lookup_builtin_opt cx (OrdinaryName "Promise") in
+  let promise_t = lookup_builtin_value_opt cx "Promise" in
   match promise_t with
   | Some (OpenT (_, id)) ->
     let (_, constraints) = Context.find_constraints cx id in
@@ -754,7 +774,7 @@ let builtin_promise_class_id cx =
               ( _,
                 PolyT
                   {
-                    t_out = ThisClassT (_, DefT (_, InstanceT { inst = { class_id; _ }; _ }), _, _);
+                    t_out = DefT (_, ClassT (ThisInstanceT (_, { inst = { class_id; _ }; _ }, _, _)));
                     _;
                   }
               )
@@ -766,7 +786,7 @@ let builtin_promise_class_id cx =
   | _ -> None
 
 let is_builtin_iterable_class_id class_id cx =
-  let t = lookup_builtin_opt cx (OrdinaryName "$Iterable") in
+  let t = lookup_builtin_type_opt cx "$Iterable" in
   match t with
   | Some (OpenT (_, id)) ->
     let (_, constraints) = Context.find_constraints cx id in
@@ -793,7 +813,7 @@ let is_builtin_iterable_class_id class_id cx =
   | _ -> false
 
 let builtin_react_element_opaque_id cx =
-  let t_opt = lookup_builtin_opt cx (OrdinaryName "React$Element") in
+  let t_opt = lookup_builtin_type_opt cx "React$Element" in
   match t_opt with
   | Some (OpenT (_, id)) ->
     let (_, constraints) = Context.find_constraints cx id in
@@ -865,6 +885,21 @@ let obj_map_const cx o reason_op target =
   let map_field _ t = map_t target t in
   map_obj cx o reason_op ~map_t ~map_field
 
+let namespace_type cx reason values types =
+  let add name { preferred_def_locs; name_loc; type_ } acc =
+    NameUtils.Map.add
+      name
+      (Field { preferred_def_locs; key_loc = name_loc; type_; polarity = Polarity.Positive })
+      acc
+  in
+  let props = NameUtils.Map.fold add values NameUtils.Map.empty in
+  let proto = ObjProtoT reason in
+  let values_type = Obj_type.mk_with_proto cx reason ~obj_kind:Exact ~frozen:true ~props proto in
+  let types_tmap =
+    Context.generate_property_map cx (NameUtils.Map.fold add types NameUtils.Map.empty)
+  in
+  NamespaceT { values_type; types_tmap }
+
 let check_untyped_import cx import_kind lreason ureason =
   match (import_kind, desc_of_reason lreason) with
   (* Use a special reason so we can tell the difference between an any-typed type import
@@ -887,37 +922,39 @@ let is_exception_to_react_dro = function
 
 (* Fix a this-abstracted instance type by tying a "knot": assume that the
    fixpoint is some `this`, substitute it as This in the instance type, and
-   finally unify it with the instance type. Return the class type wrapping the
-   instance type. *)
-let fix_this_class cx reason (r, i, is_this, this_name) =
-  let i' =
-    match Flow_cache.Fix.find cx is_this i with
-    | Some i' -> i'
-    | None ->
-      let reason_i = reason_of_t i in
-      let rec i' =
-        lazy
-          (let this = Tvar.mk_fully_resolved_lazy cx reason_i i' in
-           let this_generic =
-             if is_this then
-               GenericT
-                 {
-                   id = Context.make_generic_id cx this_name (def_loc_of_reason r);
-                   reason;
-                   name = this_name;
-                   bound = this;
-                 }
-             else
-               this
-           in
-           let i' = subst cx (Subst_name.Map.singleton this_name this_generic) i in
-           Flow_cache.Fix.add cx is_this i i';
-           i'
-          )
-      in
-      Lazy.force i'
-  in
-  DefT (r, ClassT i')
+   finally return the result as `this`. *)
+let fix_this_instance cx reason (reason_i, i, is_this, this_name) =
+  let cache_key = DefT (reason_i, InstanceT i) in
+  match Flow_cache.Fix.find cx is_this cache_key with
+  | Some i' -> i'
+  | None ->
+    let rec i' =
+      lazy
+        (let this = Tvar.mk_fully_resolved_lazy cx reason_i i' in
+         let this_generic =
+           if is_this then
+             GenericT
+               {
+                 id = Context.make_generic_id cx this_name (def_loc_of_reason reason_i);
+                 reason;
+                 name = this_name;
+                 bound = this;
+                 no_infer = false;
+               }
+           else
+             this
+         in
+         let i' =
+           DefT
+             ( reason_i,
+               InstanceT (subst_instance_type cx (Subst_name.Map.singleton this_name this_generic) i)
+             )
+         in
+         Flow_cache.Fix.add cx is_this cache_key i';
+         i'
+        )
+    in
+    Lazy.force i'
 
 module type Instantiation_helper_sig = sig
   val cache_instantiate :
@@ -931,14 +968,7 @@ module type Instantiation_helper_sig = sig
     Type.t ->
     Type.t
 
-  val reposition :
-    Context.t ->
-    ?trace:Type.trace ->
-    ALoc.t ->
-    ?desc:reason_desc ->
-    ?annot_loc:ALoc.t ->
-    Type.t ->
-    Type.t
+  val reposition : Context.t -> ?trace:Type.trace -> ALoc.t -> Type.t -> Type.t
 
   val is_subtype : Context.t -> Type.trace -> use_op:use_op -> Type.t * Type.t -> unit
 
@@ -948,9 +978,7 @@ module type Instantiation_helper_sig = sig
 end
 
 module Instantiation_kit (H : Instantiation_helper_sig) = struct
-  open H
-
-  let cache_instantiate = cache_instantiate
+  let cache_instantiate = H.cache_instantiate
 
   (* Instantiate a polymorphic definition given type arguments. *)
   let instantiate_poly_with_targs
@@ -1000,14 +1028,20 @@ module Instantiation_kit (H : Instantiation_helper_sig) = struct
           let frame = Frame (TypeParamBound { name = typeparam.name }, use_op) in
           if not (Context.in_implicit_instantiation cx) then
             if unify_bounds then
-              unify cx trace ~use_op:frame (t_, subst cx ~use_op map typeparam.bound)
+              H.unify cx trace ~use_op:frame (t_, subst cx ~use_op map typeparam.bound)
             else
-              is_subtype cx trace ~use_op:frame (t_, subst cx ~use_op map typeparam.bound);
+              H.is_subtype cx trace ~use_op:frame (t_, subst cx ~use_op map typeparam.bound);
           (Subst_name.Map.add typeparam.name t_ map, ts, all_ts))
         (Subst_name.Map.empty, ts, [])
         xs
     in
-    (reposition cx ~trace (loc_of_reason reason_tapp) (subst cx ~use_op map t), all_ts_rev)
+    ( H.reposition
+        cx
+        ~trace
+        (loc_of_reason reason_tapp)
+        (subst cx ~use_op ~placeholder_no_infer:(Context.in_implicit_instantiation cx) map t),
+      all_ts_rev
+    )
 
   let mk_typeapp_of_poly
       cx trace ~use_op ~reason_op ~reason_tapp ?(cache = false) id tparams_loc xs t ts =
@@ -1068,7 +1102,7 @@ module Instantiation_kit (H : Instantiation_helper_sig) = struct
       ?(cache = false)
       ?(unify_bounds = false)
       (tparams_loc, xs, t) =
-    let ts = xs |> Nel.map (fun typeparam -> mk_targ cx typeparam reason_op reason_tapp) in
+    let ts = xs |> Nel.map (fun typeparam -> H.mk_targ cx typeparam reason_op reason_tapp) in
     instantiate_poly_with_targs
       cx
       trace
@@ -1107,6 +1141,84 @@ let substitute_mapped_type_distributive_tparams
         homomorphic
     in
     (subst property_type, homomorphic')
+
+module ValueToTypeReferenceTransform = struct
+  (* a component syntax value annotation becomes an element of that component *)
+  let run_on_abstract_component cx reason_component reason_op l =
+    let elem_reason =
+      let desc = react_element_desc_of_component_reason reason_component in
+      let annot_loc = loc_of_reason reason_op in
+      annot_reason ~annot_loc (replace_desc_reason desc reason_op)
+    in
+    let t =
+      Tvar.mk_fully_resolved cx elem_reason (lookup_builtin_type cx "React$Element" elem_reason)
+    in
+    TypeUtil.typeapp ~from_value:false ~use_desc:true elem_reason t [l]
+
+  let run_on_concrete_type cx ~trace ~use_op reason_op kind = function
+    | DefT
+        ( _,
+          PolyT
+            {
+              tparams_loc = _;
+              tparams = ids;
+              t_out = DefT (reason_component, ReactAbstractComponentT _) as t;
+              _;
+            }
+        )
+      when kind = RenderTypeKind ->
+      let subst_map =
+        Nel.fold_left
+          (fun acc tparam -> Subst_name.Map.add tparam.name (AnyT.untyped reason_op) acc)
+          Subst_name.Map.empty
+          ids
+      in
+      let t = subst cx ~use_op subst_map t in
+      run_on_abstract_component cx reason_component reason_op t
+    | DefT (reason_tapp, PolyT { tparams_loc; tparams = ids; _ }) ->
+      add_output
+        cx
+        ~trace
+        (Error_message.EMissingTypeArgs
+           {
+             reason_op;
+             reason_tapp;
+             reason_arity = mk_poly_arity_reason tparams_loc;
+             min_arity = poly_minimum_arity ids;
+             max_arity = Nel.length ids;
+           }
+        );
+      AnyT.error reason_tapp
+    | DefT (_, ClassT it) ->
+      (* a class value annotation becomes the instance type *)
+      (match it with
+      (* when a this-abstracted class flows to upper bounds, fix the class *)
+      | ThisInstanceT (inst_r, i, this, this_name) ->
+        fix_this_instance cx reason_op (inst_r, i, this, this_name)
+      | _ -> it)
+    | DefT (_, TypeT (_, t)) -> t
+    | DefT (lreason, EnumObjectT enum) ->
+      (* an enum object value annotation becomes the enum type *)
+      mk_enum_type lreason enum
+    | DefT (enum_reason, EnumT _) ->
+      add_output cx ~trace Error_message.(EEnumMemberUsedAsType { reason = reason_op; enum_reason });
+      AnyT.error reason_op
+    | DefT (reason_component, ReactAbstractComponentT _) as l ->
+      run_on_abstract_component cx reason_component reason_op l
+    | DefT (r, EmptyT)
+    | AnyT (r, AnyError (Some MissingAnnotation)) ->
+      add_output cx ~trace Error_message.(EValueUsedAsType { reason_use = reason_op });
+      AnyT.error r
+    | AnyT (_, AnyError _) as l ->
+      (* Short-circut as we already error on the unresolved name. *)
+      l
+    | AnyT (r, _) ->
+      add_output cx ~trace Error_message.(EAnyValueUsedAsType { reason_use = reason_op });
+      AnyT.error r
+    | t ->
+      add_output cx ~trace Error_message.(EValueUsedAsType { reason_use = reason_op });
+      AnyT.error (TypeUtil.reason_of_t t)
+end
 
 (***********)
 (* Imports *)
@@ -1147,13 +1259,19 @@ let check_nonstrict_import cx is_strict imported_is_strict reason =
 module type Import_export_helper_sig = sig
   type r
 
-  val reposition : Context.t -> ALoc.t -> ?desc:reason_desc -> ?annot_loc:ALoc.t -> Type.t -> Type.t
+  val reposition : Context.t -> ALoc.t -> Type.t -> Type.t
 
   val export_named :
-    Context.t -> Reason.t * Type.named_symbol NameUtils.Map.t * export_kind -> Type.t -> r
+    Context.t ->
+    Reason.t * Type.named_symbol NameUtils.Map.t * Type.named_symbol NameUtils.Map.t * export_kind ->
+    Type.t ->
+    r
 
   val export_named_fresh_var :
-    Context.t -> Reason.t * Type.named_symbol NameUtils.Map.t * export_kind -> Type.t -> Type.t
+    Context.t ->
+    Reason.t * Type.named_symbol NameUtils.Map.t * Type.named_symbol NameUtils.Map.t * export_kind ->
+    Type.t ->
+    Type.t
 
   val export_type :
     Context.t ->
@@ -1208,22 +1326,27 @@ end
 module ImportTypeTKit = struct
   let canonicalize_imported_type cx reason t =
     match t with
+    (* fix this-abstracted class when used as a type *)
+    | DefT (_, ClassT (ThisInstanceT (r, i, this, this_name))) ->
+      Some (DefT (reason, ClassT (fix_this_instance cx reason (r, i, this, this_name))))
     | DefT (_, ClassT inst) -> Some (DefT (reason, TypeT (ImportClassKind, inst)))
-    | DefT (_, PolyT { tparams_loc; tparams = typeparams; t_out = DefT (_, ClassT inst); id }) ->
-      Some (poly_type id tparams_loc typeparams (DefT (reason, TypeT (ImportClassKind, inst))))
     (* delay fixing a polymorphic this-abstracted class until it is specialized,
        by transforming the instance type to a type application *)
-    | DefT (_, PolyT { tparams_loc; tparams = typeparams; t_out = ThisClassT _; _ }) ->
+    | DefT
+        ( _,
+          PolyT { tparams_loc; tparams = typeparams; t_out = DefT (_, ClassT (ThisInstanceT _)); _ }
+        ) ->
       let (_, targs) = typeparams |> Nel.to_list |> mk_tparams cx in
       let tapp = implicit_typeapp t targs in
       Some (poly_type (Type.Poly.generate_id ()) tparams_loc typeparams (class_type tapp))
+    | DefT (_, PolyT { tparams_loc; tparams = typeparams; t_out = DefT (_, ClassT inst); id }) ->
+      Some (poly_type id tparams_loc typeparams (DefT (reason, TypeT (ImportClassKind, inst))))
     | DefT (_, PolyT { t_out = DefT (_, TypeT _); _ }) -> Some t
-    (* fix this-abstracted class when used as a type *)
-    | ThisClassT (r, i, this, this_name) -> Some (fix_this_class cx reason (r, i, this, this_name))
     | DefT (enum_reason, EnumObjectT enum) ->
       let enum_type = mk_enum_type enum_reason enum in
       Some (DefT (reason, TypeT (ImportEnumKind, enum_type)))
     | DefT (_, ReactAbstractComponentT _) -> Some t
+    | NamespaceT _ -> Some t
     | DefT (_, PolyT { t_out = DefT (_, ReactAbstractComponentT _); _ }) -> Some t
     | DefT (_, TypeT _) -> Some t
     | AnyT _ -> Some t
@@ -1246,8 +1369,14 @@ end
 (************************************************************************)
 
 module ImportTypeofTKit = struct
-  let on_concrete_type cx ~mk_typeof_annotation reason export_name l =
+  let on_concrete_type cx reason export_name l =
     match l with
+    | DefT
+        ( _,
+          PolyT { tparams_loc = _; tparams = _; t_out = DefT (_, ClassT (ThisInstanceT _)); id = _ }
+        ) ->
+      let typeof_t = TypeUtil.typeof_annotation reason l None in
+      DefT (reason, TypeT (ImportTypeofKind, typeof_t))
     | DefT
         ( _,
           PolyT
@@ -1258,7 +1387,7 @@ module ImportTypeofTKit = struct
               id;
             }
         ) ->
-      let typeof_t = mk_typeof_annotation cx reason lower_t in
+      let typeof_t = TypeUtil.typeof_annotation reason lower_t None in
 
       poly_type id tparams_loc typeparams (DefT (reason, TypeT (ImportTypeofKind, typeof_t)))
     | DefT (_, TypeT _)
@@ -1266,13 +1395,13 @@ module ImportTypeofTKit = struct
       add_output cx (Error_message.EImportTypeAsTypeof (reason, export_name));
       AnyT.error reason
     | _ ->
-      let typeof_t = mk_typeof_annotation cx reason l in
+      let typeof_t = TypeUtil.typeof_annotation reason l None in
       DefT (reason, TypeT (ImportTypeofKind, typeof_t))
 end
 
-module CJSRequireT_kit (F : Import_export_helper_sig) = struct
+module CJSRequireTKit = struct
   (* require('SomeModule') *)
-  let on_ModuleT cx (reason, is_strict, legacy_interop) module_ =
+  let on_ModuleT cx ~reposition (reason, is_strict, legacy_interop) module_ =
     let {
       module_reason;
       module_export_types = exports;
@@ -1286,31 +1415,35 @@ module CJSRequireT_kit (F : Import_export_helper_sig) = struct
     | Some t ->
       (* reposition the export to point at the require(), like the object
          we create below for non-CommonJS exports *)
-      F.reposition cx (loc_of_reason reason) t
+      reposition cx (loc_of_reason reason) t
     | None ->
       (* Use default export if option is enabled and module is not lib *)
       let automatic_require_default =
         (legacy_interop || Context.automatic_require_default cx)
         && not (is_lib_reason_def module_reason)
       in
-      let exports_tmap = Context.find_exports cx exports.exports_tmap in
+      let value_exports_tmap = Context.find_exports cx exports.value_exports_tmap in
+      let type_exports_tmap = Context.find_exports cx exports.type_exports_tmap in
       (* Convert ES module's named exports to an object *)
-      let mk_exports_object () =
+      let mk_exports_namespace () =
         let proto = ObjProtoT reason in
-        let props =
-          NameUtils.Map.map
-            (fun { preferred_def_locs; name_loc; is_type_only_export = _; type_ } ->
-              Field { preferred_def_locs; key_loc = name_loc; type_; polarity = Polarity.Positive })
-            exports_tmap
+        let named_symbol_to_field { preferred_def_locs; name_loc; type_ } =
+          Field { preferred_def_locs; key_loc = name_loc; type_; polarity = Polarity.Positive }
         in
-        Obj_type.mk_with_proto cx reason ~obj_kind:Exact ~frozen:true ~props proto
+        let value_props = NameUtils.Map.map named_symbol_to_field value_exports_tmap in
+        let type_props = NameUtils.Map.map named_symbol_to_field type_exports_tmap in
+        let values_type =
+          Obj_type.mk_with_proto cx reason ~obj_kind:Exact ~frozen:true ~props:value_props proto
+        in
+        let types_tmap = Context.generate_property_map cx type_props in
+        NamespaceT { values_type; types_tmap }
       in
       if automatic_require_default then
-        match NameUtils.Map.find_opt (OrdinaryName "default") exports_tmap with
-        | Some { preferred_def_locs = _; name_loc = _; is_type_only_export = _; type_ } -> type_
-        | _ -> mk_exports_object ()
+        match NameUtils.Map.find_opt (OrdinaryName "default") value_exports_tmap with
+        | Some { preferred_def_locs = _; name_loc = _; type_ } -> type_
+        | _ -> mk_exports_namespace ()
       else
-        mk_exports_object ()
+        mk_exports_namespace ()
 end
 
 module ImportModuleNsTKit = struct
@@ -1331,23 +1464,16 @@ module ImportModuleNsTKit = struct
       |> Reason.repos_reason (loc_of_reason reason_op)
       |> Reason.replace_desc_reason (desc_of_reason reason_op)
     in
-    let exports_tmap = Context.find_exports cx exports.exports_tmap in
-    let props =
-      NameUtils.Map.fold
-        (fun name { preferred_def_locs; name_loc; is_type_only_export; type_ } acc ->
-          if is_type_only_export && is_common_interface_module then
-            acc
-          else
-            NameUtils.Map.add
-              name
-              (Field { preferred_def_locs; key_loc = name_loc; type_; polarity = Polarity.Positive })
-              acc)
-        exports_tmap
-        NameUtils.Map.empty
+    let value_exports_tmap = Context.find_exports cx exports.value_exports_tmap in
+    let type_exports_tmap = Context.find_exports cx exports.type_exports_tmap in
+    let named_symbol_to_field { preferred_def_locs; name_loc; type_ } =
+      Field { preferred_def_locs; key_loc = name_loc; type_; polarity = Polarity.Positive }
     in
-    let props =
+    let value_props = NameUtils.Map.map named_symbol_to_field value_exports_tmap in
+    let type_props = NameUtils.Map.map named_symbol_to_field type_exports_tmap in
+    let value_props =
       if Context.facebook_module_interop cx then
-        props
+        value_props
       else
         match exports.cjs_export with
         | Some type_ ->
@@ -1355,8 +1481,8 @@ module ImportModuleNsTKit = struct
           let p =
             Field { preferred_def_locs = None; key_loc = None; type_; polarity = Polarity.Positive }
           in
-          NameUtils.Map.add (OrdinaryName "default") p props
-        | None -> props
+          NameUtils.Map.add (OrdinaryName "default") p value_props
+        | None -> value_props
     in
     let obj_kind =
       if exports.has_every_named_export then
@@ -1373,14 +1499,17 @@ module ImportModuleNsTKit = struct
         Exact
     in
     let proto = ObjProtoT reason in
-    Obj_type.mk_with_proto cx reason ~obj_kind ~frozen:true ~props proto
+    let values_type =
+      Obj_type.mk_with_proto cx reason ~obj_kind ~frozen:true ~props:value_props proto
+    in
+    let types_tmap = Context.generate_property_map cx type_props in
+    NamespaceT { values_type; types_tmap }
 end
 
 module ImportDefaultTKit = struct
   (* import [type] X from 'SomeModule'; *)
   let on_ModuleT
       cx
-      ~mk_typeof_annotation
       ~assert_import_is_value
       ~with_concretized_type
       (reason, import_kind, (local_name, module_name), is_strict)
@@ -1398,10 +1527,9 @@ module ImportDefaultTKit = struct
       match exports.cjs_export with
       | Some t -> (None, t)
       | None ->
-        let exports_tmap = Context.find_exports cx exports.exports_tmap in
+        let exports_tmap = Context.find_exports cx exports.value_exports_tmap in
         (match NameUtils.Map.find_opt (OrdinaryName "default") exports_tmap with
-        | Some { preferred_def_locs = _; is_type_only_export = _; name_loc; type_ } ->
-          (name_loc, type_)
+        | Some { preferred_def_locs = _; name_loc; type_ } -> (name_loc, type_)
         | None ->
           (*
            * A common error while using `import` syntax is to forget or
@@ -1438,7 +1566,7 @@ module ImportDefaultTKit = struct
         with_concretized_type
           cx
           reason
-          (ImportTypeofTKit.on_concrete_type cx ~mk_typeof_annotation reason "default")
+          (ImportTypeofTKit.on_concrete_type cx reason "default")
           export_t
       )
     | ImportValue ->
@@ -1450,7 +1578,6 @@ module ImportNamedTKit = struct
   (* import {X} from 'SomeModule'; *)
   let on_ModuleT
       cx
-      ~mk_typeof_annotation
       ~assert_import_is_value
       ~with_concretized_type
       (reason, import_kind, export_name, module_name, is_strict)
@@ -1469,19 +1596,29 @@ module ImportNamedTKit = struct
      * exports called "default" with a pointer to the raw `module.exports`
      * object
      *)
-    let exports_tmap =
-      let exports_tmap = Context.find_exports cx exports.exports_tmap in
+    let value_exports_tmap =
+      let value_exports_tmap = Context.find_exports cx exports.value_exports_tmap in
       match exports.cjs_export with
       | Some type_ ->
         NameUtils.Map.add
           (OrdinaryName "default")
-          { preferred_def_locs = None; name_loc = None; is_type_only_export = false; type_ }
-          exports_tmap
-      | None -> exports_tmap
+          { preferred_def_locs = None; name_loc = None; type_ }
+          value_exports_tmap
+      | None -> value_exports_tmap
     in
+    let type_exports_tmap = Context.find_exports cx exports.type_exports_tmap in
     let has_every_named_export = exports.has_every_named_export in
-    match (import_kind, NameUtils.Map.find_opt (OrdinaryName export_name) exports_tmap) with
-    | (ImportType, Some { preferred_def_locs = _; is_type_only_export = _; name_loc; type_ }) ->
+    let exported_symbol_opt =
+      match import_kind with
+      | ImportValue -> NameUtils.Map.find_opt (OrdinaryName export_name) value_exports_tmap
+      | ImportType
+      | ImportTypeof ->
+        (match NameUtils.Map.find_opt (OrdinaryName export_name) type_exports_tmap with
+        | Some _ as s -> s
+        | None -> NameUtils.Map.find_opt (OrdinaryName export_name) value_exports_tmap)
+    in
+    match (import_kind, exported_symbol_opt) with
+    | (ImportType, Some { preferred_def_locs = _; name_loc; type_ }) ->
       ( name_loc,
         with_concretized_type
           cx
@@ -1497,12 +1634,12 @@ module ImportNamedTKit = struct
           (ImportTypeTKit.on_concrete_type cx reason export_name)
           (AnyT.untyped reason)
       )
-    | (ImportTypeof, Some { preferred_def_locs = _; is_type_only_export = _; name_loc; type_ }) ->
+    | (ImportTypeof, Some { preferred_def_locs = _; name_loc; type_ }) ->
       ( name_loc,
         with_concretized_type
           cx
           reason
-          (ImportTypeofTKit.on_concrete_type cx ~mk_typeof_annotation reason export_name)
+          (ImportTypeofTKit.on_concrete_type cx reason export_name)
           type_
       )
     | (ImportTypeof, None) when has_every_named_export ->
@@ -1510,17 +1647,27 @@ module ImportNamedTKit = struct
         with_concretized_type
           cx
           reason
-          (ImportTypeofTKit.on_concrete_type cx ~mk_typeof_annotation reason export_name)
+          (ImportTypeofTKit.on_concrete_type cx reason export_name)
           (AnyT.untyped reason)
       )
-    | (ImportValue, Some { preferred_def_locs = _; is_type_only_export = _; name_loc; type_ }) ->
+    | (ImportValue, Some { preferred_def_locs = _; name_loc; type_ }) ->
       assert_import_is_value cx reason export_name type_;
       (name_loc, type_)
     | (ImportValue, None) when has_every_named_export ->
       let t = AnyT.untyped reason in
       assert_import_is_value cx reason export_name t;
       (None, t)
+    | (ImportValue, None) when NameUtils.Map.mem (OrdinaryName export_name) type_exports_tmap ->
+      add_output cx (Error_message.EImportTypeAsValue (reason, export_name));
+      (None, AnyT.error reason)
     | (_, None) ->
+      let exports_tmap =
+        match import_kind with
+        | ImportValue -> value_exports_tmap
+        | ImportType
+        | ImportTypeof ->
+          NameUtils.Map.union value_exports_tmap type_exports_tmap
+      in
       let num_exports = NameUtils.Map.cardinal exports_tmap in
       let has_default_export = NameUtils.Map.mem (OrdinaryName "default") exports_tmap in
       let msg =
@@ -1604,11 +1751,11 @@ end
    that are not @flow, so the rules have to deal with `any`. *)
 
 (* util that grows a module by adding named exports from a given map *)
-module ExportNamedT_kit (F : Import_export_helper_sig) = struct
-  let on_ModuleT cx (_, tmap, export_kind) lhs module_ =
+module ExportNamedTKit = struct
+  let mod_ModuleT cx (value_tmap, type_tmap, export_kind) module_ =
     let {
       module_reason = _;
-      module_export_types = { exports_tmap; _ };
+      module_export_types = { value_exports_tmap; type_exports_tmap; _ };
       module_is_strict = _;
       module_available_platforms = _;
     } =
@@ -1617,26 +1764,27 @@ module ExportNamedT_kit (F : Import_export_helper_sig) = struct
     let add_export name export acc =
       let export' =
         match export_kind with
-        | ExportValue -> export
+        | DirectExport -> export
         | ReExport ->
           (* Re-exports do not overwrite named exports from the local module. *)
           NameUtils.Map.find_opt name acc |> Base.Option.value ~default:export
-        | ExportType -> export
       in
       NameUtils.Map.add name export' acc
     in
-    Context.find_exports cx exports_tmap
-    |> NameUtils.Map.fold add_export tmap
-    |> Context.add_export_map cx exports_tmap;
-    F.return cx lhs
+    Context.find_exports cx value_exports_tmap
+    |> NameUtils.Map.fold add_export value_tmap
+    |> Context.add_export_map cx value_exports_tmap;
+    Context.find_exports cx type_exports_tmap
+    |> NameUtils.Map.fold add_export type_tmap
+    |> Context.add_export_map cx type_exports_tmap
 end
 
 module AssertExportIsTypeT_kit (F : Import_export_helper_sig) = struct
   let rec is_type = function
     | DefT (_, ClassT _)
     | DefT (_, EnumObjectT _)
-    | ThisClassT (_, _, _, _)
     | DefT (_, TypeT _)
+    | NamespaceT _
     | AnyT _ ->
       true
     | DefT (_, PolyT { t_out = t'; _ }) -> is_type t'
@@ -1664,8 +1812,14 @@ module CopyNamedExportsT_kit (F : Import_export_helper_sig) = struct
     } =
       module_
     in
-    let source_tmap = Context.find_exports cx source_exports.exports_tmap in
-    F.export_named cx (reason, source_tmap, ReExport) target_module_t
+    F.export_named
+      cx
+      ( reason,
+        Context.find_exports cx source_exports.value_exports_tmap,
+        Context.find_exports cx source_exports.type_exports_tmap,
+        ReExport
+      )
+      target_module_t
 
   (* There is nothing to copy from a module exporting `any` or `Object`. *)
   let on_AnyT cx lreason (reason, target_module) =
@@ -1685,22 +1839,19 @@ module CopyTypeExportsT_kit (F : Import_export_helper_sig) = struct
     } =
       module_
     in
-    let source_exports = Context.find_exports cx source_exports.exports_tmap in
-    let source_exports =
-      NameUtils.Map.map
-        (fun { name_loc; preferred_def_locs; is_type_only_export = _; type_ } ->
-          (name_loc, preferred_def_locs, type_))
-        source_exports
-    in
-    let target_module_t =
+    let export_all exports_tmap =
       NameUtils.Map.fold
-        (fun export_name (name_loc, preferred_def_locs, export_t) target_module_t ->
+        (fun export_name { name_loc; preferred_def_locs; type_ } target_module_t ->
           F.export_type
             cx
             (reason, name_loc, preferred_def_locs, export_name, target_module_t)
-            export_t)
-        source_exports
-        target_module_t
+            type_)
+        (Context.find_exports cx exports_tmap)
+    in
+    let target_module_t =
+      target_module_t
+      |> export_all source_exports.value_exports_tmap
+      |> export_all source_exports.type_exports_tmap
     in
     F.return cx target_module_t
 
@@ -1725,18 +1876,26 @@ module ExportTypeT_kit (F : Import_export_helper_sig) = struct
       | l -> ImportTypeTKit.canonicalize_imported_type cx reason l <> None
     in
     if is_type_export then
-      let named =
-        NameUtils.Map.singleton
-          export_name
-          { preferred_def_locs; name_loc; is_type_only_export = true; type_ = l }
-      in
-      F.export_named cx (reason, named, ReExport) target_module_t
+      let named = NameUtils.Map.singleton export_name { preferred_def_locs; name_loc; type_ = l } in
+      F.export_named cx (reason, NameUtils.Map.empty, named, ReExport) target_module_t
     else
       F.return cx target_module_t
 end
 
 module CJSExtractNamedExportsT_kit (F : Import_export_helper_sig) = struct
   let on_concrete_type cx (reason, local_module) = function
+    | NamespaceT { values_type; types_tmap } ->
+      (* Copy props from the values part *)
+      let module_t = F.cjs_extract_named_exports cx (reason, local_module) values_type in
+      (* Copy type exports *)
+      F.export_named
+        cx
+        ( reason,
+          NameUtils.Map.empty,
+          Properties.extract_named_exports (Context.find_props cx types_tmap),
+          DirectExport
+        )
+        module_t
     (* ObjT CommonJS export values have their properties turned into named exports. *)
     | DefT (_, ObjT o)
     | ExactT (_, DefT (_, ObjT o)) ->
@@ -1746,7 +1905,11 @@ module CJSExtractNamedExportsT_kit (F : Import_export_helper_sig) = struct
       (* Copy own props *)
       F.export_named
         cx
-        (reason, Properties.extract_named_exports (Context.find_props cx props_tmap), ExportValue)
+        ( reason,
+          Properties.extract_named_exports (Context.find_props cx props_tmap),
+          NameUtils.Map.empty,
+          DirectExport
+        )
         module_t
     (* InstanceT CommonJS export values have their properties turned into named exports. *)
     | DefT (_, InstanceT { inst = { own_props; proto_props; _ }; _ }) ->
@@ -1758,11 +1921,17 @@ module CJSExtractNamedExportsT_kit (F : Import_export_helper_sig) = struct
       in
       (* Copy own props *)
       let module_t =
-        F.export_named_fresh_var cx (reason, extract_named_exports own_props, ExportValue) module_t
+        F.export_named_fresh_var
+          cx
+          (reason, extract_named_exports own_props, NameUtils.Map.empty, DirectExport)
+          module_t
       in
       (* Copy proto props *)
       (* TODO: own props should take precedence *)
-      F.export_named cx (reason, extract_named_exports proto_props, ExportValue) module_t
+      F.export_named
+        cx
+        (reason, extract_named_exports proto_props, NameUtils.Map.empty, DirectExport)
+        module_t
     (* If the module is exporting any or Object, then we allow any named import. *)
     | AnyT _ ->
       let {
@@ -1857,16 +2026,11 @@ module type Get_prop_helper_sig = sig
     Reason.reason * Type.lookup_kind * Type.propref * use_op * Type.Properties.Set.t ->
     r
 
-  val reposition :
-    Context.t ->
-    ?trace:Type.trace ->
-    ALoc.t ->
-    ?desc:reason_desc ->
-    ?annot_loc:ALoc.t ->
-    Type.t ->
-    Type.t
+  val reposition : Context.t -> ?trace:Type.trace -> ALoc.t -> Type.t -> Type.t
 
   val mk_react_dro : Context.t -> use_op -> ALoc.t * Type.dro_type -> Type.t -> Type.t
+
+  val mk_hooklike : Context.t -> use_op -> Type.t -> Type.t
 
   val enum_proto : Context.t -> reason:Reason.t -> Reason.t * Type.enum_t -> Type.t
 
@@ -1890,6 +2054,13 @@ module GetPropT_kit (F : Get_prop_helper_sig) = struct
       let t =
         match react_dro with
         | Some dro when not (is_exception_to_react_dro propref) -> F.mk_react_dro cx use_op dro t
+        | _ -> t
+      in
+      let t =
+        match propref with
+        | Named { name = OrdinaryName name; _ }
+          when Context.hooklike_functions cx && Flow_ast_utils.hook_name name ->
+          F.mk_hooklike cx use_op t
         | _ -> t
       in
       F.return cx trace ~use_op:unknown_use (F.reposition cx ~trace loc t)
@@ -2389,6 +2560,10 @@ let flow_arith cx ?trace reason l r kind =
       );
     AnyT.error reason
 
+let is_same_instance_type { class_id = class_id1; _ } { class_id = class_id2; _ } =
+  (* `ALoc.id_none` is not equal to anything for class ids *)
+  ALoc.equal_id class_id1 class_id2 && (not @@ ALoc.equal_id class_id1 ALoc.id_none)
+
 (* TypeAppT ~> TypeAppT has special behavior that flows the type arguments directly
  * instead of evaluating the types and then flowing the results to each other. This is
  * a bug that should be removed because it breaks transitivity, which can cause errors
@@ -2414,7 +2589,7 @@ let rec wraps_mapped_type cx = function
       wraps_mapped_type cx t
     | _ -> false)
   | DefT (_, PolyT { t_out; _ }) -> wraps_mapped_type cx t_out
-  | TypeAppT { reason = _; use_op = _; type_; targs = _; use_desc = _ } ->
+  | TypeAppT { reason = _; use_op = _; type_; targs = _; from_value = _; use_desc = _ } ->
     wraps_mapped_type cx type_
   | _ -> false
 

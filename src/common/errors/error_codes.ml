@@ -9,6 +9,9 @@ type error_code =
   | AmbiguousObjectType
   | ReactRulePropsMutation
   | ReactRuleHookMutation
+  | ReactRuleHookIncompatible
+  | ReactRuleHook
+  | ReactRuleRef
   | CannotDelete
   | CannotImplement
   | CannotInferType
@@ -79,7 +82,6 @@ type error_code =
   | InvalidFlowModeDecl
   | InvalidGraphQL
   | InvalidExportedAnnotation
-  | InvalidExportedAnnotationRecursive
   | InvalidIdx
   | InvalidImportStarUse
   | InvalidImportType
@@ -146,7 +148,6 @@ type error_code =
   | SpeculationAmbiguous
   | TSSyntax
   | ThisInExportedFunction
-  | ToplevelLibraryImport
   | TupleInvalidTypeSpread
   | TupleRequiredAfterOptional
   | TypeAsValue
@@ -154,14 +155,15 @@ type error_code =
   | UnclearType
   | UnderconstrainedImplicitInstantiation
   | UninitializedInstanceProperty
+  | UnionUnoptimizable
   | UnnecessaryInvariant
   | UnnecessaryOptionalChain
+  | UnnecessaryDeclareTypeOnlyExport
   | UnreachableCode
   | UnsafeAddition
   | UnsafeArith
   | UnsafeGettersSetters
   | UnsupportedSyntax
-  | UnsupportedStatementInLibdef
   | UnsupportedVarianceAnnotation
   | UntypedImport
   | UntypedTypeImport
@@ -177,7 +179,6 @@ type error_code =
   | ReactIntrinsicOverlap
   | NestedComponent
   | InvalidRef
-  | ReactRuleRef
 
 let code_of_lint : Lints.lint_kind -> error_code = function
   | Lints.ReactIntrinsicOverlap -> ReactIntrinsicOverlap
@@ -208,9 +209,21 @@ let code_of_lint : Lints.lint_kind -> error_code = function
   | Lints.ExportRenamedDefault -> ExportRenamedDefault
   | Lints.UnusedPromise -> UnusedPromise
 
+let require_specific : error_code -> bool = function
+  | ReactRulePropsMutation
+  | ReactRuleHookMutation
+  | ReactRuleHookIncompatible
+  | ReactRuleHook
+  | ReactRuleRef ->
+    true
+  | _ -> false
+
 let string_of_code : error_code -> string = function
   | ReactRulePropsMutation -> "react-rule-unsafe-mutation"
   | ReactRuleHookMutation -> "react-rule-hook-mutation"
+  | ReactRuleHookIncompatible -> "react-rule-hook-incompatible"
+  | ReactRuleHook -> "react-rule-hook"
+  | ReactRuleRef -> "react-rule-unsafe-ref"
   | AmbiguousObjectType -> "ambiguous-object-type"
   | CannotDelete -> "cannot-delete"
   | CannotImplement -> "cannot-implement"
@@ -281,7 +294,6 @@ let string_of_code : error_code -> string = function
   | InvalidFlowModeDecl -> "invalid-flow-mode"
   | InvalidGraphQL -> "invalid-graphql"
   | InvalidExportedAnnotation -> "invalid-exported-annotation"
-  | InvalidExportedAnnotationRecursive -> "invalid-recursive-exported-annotation"
   | InvalidExtends -> "invalid-extends"
   | InvalidIdx -> "invalid-idx"
   | InvalidImportStarUse -> "invalid-import-star-use"
@@ -350,7 +362,6 @@ let string_of_code : error_code -> string = function
   | SpeculationAmbiguous -> "speculation-ambiguous"
   | TSSyntax -> "ts-syntax"
   | ThisInExportedFunction -> "this-in-exported-function"
-  | ToplevelLibraryImport -> "toplevel-library-import"
   | TupleInvalidTypeSpread -> "tuple-invalid-type-spread"
   | TupleRequiredAfterOptional -> "tuple-required-after-optional"
   | TypeAsValue -> "type-as-value"
@@ -358,14 +369,15 @@ let string_of_code : error_code -> string = function
   | UnclearType -> "unclear-type"
   | UnderconstrainedImplicitInstantiation -> "underconstrained-implicit-instantiation"
   | UninitializedInstanceProperty -> "uninitialized-instance-property"
+  | UnionUnoptimizable -> "union-unoptimizable"
   | UnnecessaryInvariant -> "unnecessary-invariant"
   | UnnecessaryOptionalChain -> "unnecessary-optional-chain"
+  | UnnecessaryDeclareTypeOnlyExport -> "unnecessary-declare-type-only-export"
   | UnreachableCode -> "unreachable-code"
   | UnsafeAddition -> "unsafe-addition"
   | UnsafeArith -> "unsafe-arithmetic"
   | UnsafeGettersSetters -> "unsafe-getters-setters"
   | UnsupportedSyntax -> "unsupported-syntax"
-  | UnsupportedStatementInLibdef -> "unsupported-statement-in-lib"
   | UnsupportedVarianceAnnotation -> "unsupported-variance-annotation"
   | UntypedImport -> "untyped-import"
   | UntypedTypeImport -> "untyped-type-import"
@@ -380,4 +392,3 @@ let string_of_code : error_code -> string = function
   | BigIntRShift3 -> "bigint-unsigned-right-shift"
   | BigIntNumCoerce -> "bigint-num-coerce"
   | InvalidComponentProp -> "invalid-component-prop"
-  | ReactRuleRef -> "react-rule-unsafe-ref"

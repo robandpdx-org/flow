@@ -64,6 +64,11 @@ function get(url: string) {
   });
 }
 
+function versionedUnpkgComUrl(version: string): string {
+  version = version.startsWith('v') ? version.substring(1) : version;
+  return `https://unpkg.com/try-flow-website-js@${version}`;
+}
+
 export function load(
   withBaseUrl: string => string,
   version: string,
@@ -72,8 +77,6 @@ export function load(
   if (cached) {
     return Promise.resolve(cached);
   }
-  const majorVersion =
-    version === 'master' ? Infinity : parseInt(version.split('.')[1], 10);
   const libs =
     version === 'master'
       ? [
@@ -81,32 +84,17 @@ export function load(
           `/flow/master/flowlib/react.js`,
           `/flow/master/flowlib/intl.js`,
         ].map(withBaseUrl)
-      : majorVersion <= 54
-      ? [
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/core.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/bom.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/cssom.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/dom.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/node.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/react.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/streams.js`,
-        ]
-      : majorVersion <= 71
-      ? [
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/core.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/react.js`,
-        ]
       : [
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/core.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/react.js`,
-          `https://unpkg.com/try-flow-website-js@${version}/flowlib/intl.js`,
+          `${versionedUnpkgComUrl(version)}/flowlib/core.js`,
+          `${versionedUnpkgComUrl(version)}/flowlib/react.js`,
+          `${versionedUnpkgComUrl(version)}/flowlib/intl.js`,
         ];
   const flowLoader = new Promise<[string, string]>(resolve => {
     requirejs(
       [
         version === 'master'
           ? withBaseUrl('/flow/master/flow.js')
-          : `https://unpkg.com/try-flow-website-js@${version}/flow.js`,
+          : `${versionedUnpkgComUrl(version)}/flow.js`,
         ,
       ],
       resolve,
@@ -118,14 +106,10 @@ export function load(
         self.flow.registerFile(nameAndContent[0], nameAndContent[1]);
       });
       self.flow.registerFile('try-lib.js', TRY_LIB_CONTENTS);
-      if (majorVersion <= 126) {
-        self.flow.setLibs([...libs.map(normalizeUrlForFilename), 'try-lib.js']);
-      } else {
-        self.flow.initBuiltins([
-          ...libs.map(normalizeUrlForFilename),
-          'try-lib.js',
-        ]);
-      }
+      self.flow.initBuiltins([
+        ...libs.map(normalizeUrlForFilename),
+        'try-lib.js',
+      ]);
       versionCache.set(version, self.flow);
       // $FlowFixMe[cannot-resolve-name]
       return flow;

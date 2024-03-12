@@ -382,8 +382,6 @@ and 'loc t' =
   | ENonConstVarExport of 'loc * 'loc virtual_reason option
   | EThisInExportedFunction of 'loc
   | EMixedImportAndRequire of 'loc * 'loc virtual_reason
-  | EToplevelLibraryImport of 'loc
-  | EUnsupportedStatementInLibdef of 'loc * string
   | EUnsupportedVarianceAnnotation of 'loc * string
   | EExportRenamedDefault of {
       loc: 'loc;
@@ -425,6 +423,7 @@ and 'loc t' =
   | EReactRefInRender of {
       usage: 'loc virtual_reason;
       kind: ref_in_render_kind;
+      in_hook: bool;
     }
   | EFunctionCallExtraArg of 'loc virtual_reason * 'loc virtual_reason * int * 'loc virtual_use_op
   | EUnsupportedSetProto of 'loc virtual_reason
@@ -464,6 +463,7 @@ and 'loc t' =
   | EInvalidPrototype of 'loc * 'loc virtual_reason
   | EUnnecessaryOptionalChain of 'loc * 'loc virtual_reason
   | EUnnecessaryInvariant of 'loc * 'loc virtual_reason
+  | EUnnecessaryDeclareTypeOnlyExport of 'loc
   | EUnexpectedTemporaryBaseType of 'loc
   | ECannotDelete of 'loc * 'loc virtual_reason
   | ESignatureVerification of 'loc Signature_error.t
@@ -567,6 +567,7 @@ and 'loc t' =
       reason_lower: 'loc virtual_reason;
       reason_upper: 'loc virtual_reason;
       representation_type: string option;
+      casting_syntax: Options.CastingSyntax.t;
     }
   (* end enum error messages *)
   | EAssignConstLikeBinding of {
@@ -592,6 +593,24 @@ and 'loc t' =
       reason_prop: 'loc virtual_reason;
       reason_op: 'loc virtual_reason;
     }
+  | EHookIncompatible of {
+      use_op: 'loc virtual_use_op;
+      lower: 'loc virtual_reason;
+      upper: 'loc virtual_reason;
+      lower_is_hook: bool;
+      hook_is_annot: bool;
+    }
+  | EHookUniqueIncompatible of {
+      use_op: 'loc virtual_use_op;
+      lower: 'loc virtual_reason;
+      upper: 'loc virtual_reason;
+    }
+  | EHookRuleViolation of {
+      hook_rule: 'loc hook_rule;
+      callee_loc: 'loc;
+      call_loc: 'loc;
+    }
+  | EHookNaming of 'loc
   | EObjectThisReference of 'loc * 'loc virtual_reason
   | EComponentThisReference of {
       component_loc: 'loc;
@@ -607,7 +626,7 @@ and 'loc t' =
     }
   | EInvalidGraphQL of 'loc * Graphql.error
   | EAnnotationInference of 'loc * 'loc virtual_reason * 'loc virtual_reason * string option
-  | EAnnotationInferenceRecursive of 'loc * 'loc virtual_reason
+  | ETrivialRecursiveDefinition of 'loc * 'loc virtual_reason
   | EDefinitionCycle of ('loc virtual_reason * 'loc list * 'loc Env_api.annot_loc list) Nel.t
   | ERecursiveDefinition of {
       reason: 'loc virtual_reason;
@@ -673,6 +692,14 @@ and 'loc t' =
       available_platforms: SSet.t;
       required_platforms: SSet.t;
     }
+  | EUnionOptimization of {
+      loc: 'loc;
+      kind: 'loc Type.UnionRep.optimized_error;
+    }
+  | EUnionOptimizationOnNonUnion of {
+      loc: 'loc;
+      arg: 'loc virtual_reason;
+    }
 
 and 'loc null_write = {
   null_loc: 'loc;
@@ -698,9 +725,9 @@ and binding_error =
   | EReferencedBeforeDeclaration
   | ETypeInValuePosition of {
       imported: bool;
+      type_only_namespace: bool;
       name: string;
     }
-  | ETypeAliasInValuePosition
   | EConstReassigned
   | EConstParamReassigned
   | EImportReassigned
@@ -748,6 +775,7 @@ and internal_error =
 
 and unsupported_syntax =
   | AnnotationInsideDestructuring
+  | AsConstOnNonLiteral
   | ExistsType
   | MetaPropertyExpression
   | ObjectPropertyGetSet
@@ -776,9 +804,17 @@ and unsupported_syntax =
       name: string;
       static: bool;
     }
+  | ContextDependentUnsupportedStatement of context_dependent_unsupported_statement
   | WithStatement
   | ComponentSyntax
-  | TypeOfTypeArguments
+  | DeclareNamespace
+
+and context_dependent_unsupported_statement =
+  | ToplevelLibraryImport
+  | NonLibdefToplevelDeclareModule
+  | UnsupportedStatementInLibdef of string
+  | UnsupportedStatementInDeclareModule of string
+  | UnsupportedStatementInDeclareNamespace of string
 
 and lower_kind =
   | Possibly_null
@@ -824,10 +860,8 @@ and ts_syntax_kind =
   | TSTypeParamExtends
   | TSReadonlyVariance
   | TSInOutVariance of [ `In | `Out | `InOut ]
-  | TSTypeCast of {
-      kind: [ `AsConst | `Satisfies ];
-      enabled_casting_syntax: Options.CastingSyntax.t;
-    }
+  | TSAsConst of Options.CastingSyntax.t
+  | TSSatisfiesType of Options.CastingSyntax.t
   | TSReadonlyType of [ `Tuple | `Array ] option
 
 and invalid_mapped_type_error_kind =
@@ -844,6 +878,16 @@ and 'loc invalid_render_type_kind =
   | InvalidRendersNonNominalElement of 'loc virtual_reason
   | InvalidRendersGenericT
   | UncategorizedInvalidRenders
+
+and 'l hook_rule =
+  | ConditionalHook
+  | HookHasIllegalName
+  | NonHookHasIllegalName
+  | MaybeHook of {
+      hooks: 'l list;
+      non_hooks: 'l list;
+    }
+  | HookNotInComponentOrHook
 
 let string_of_assigned_const_like_binding_type = function
   | ClassNameBinding -> "class"
@@ -1157,8 +1201,6 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
   | ENonConstVarExport (loc, r) -> ENonConstVarExport (f loc, Base.Option.map ~f:map_reason r)
   | EThisInExportedFunction loc -> EThisInExportedFunction (f loc)
   | EMixedImportAndRequire (loc, r) -> EMixedImportAndRequire (f loc, map_reason r)
-  | EToplevelLibraryImport loc -> EToplevelLibraryImport (f loc)
-  | EUnsupportedStatementInLibdef (loc, k) -> EUnsupportedStatementInLibdef (f loc, k)
   | EUnsupportedVarianceAnnotation (loc, k) -> EUnsupportedVarianceAnnotation (f loc, k)
   | EExportRenamedDefault { loc; name; is_reexport } ->
     EExportRenamedDefault { loc = f loc; name; is_reexport }
@@ -1177,7 +1219,8 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
   | EInvalidLHSInAssignment l -> EInvalidLHSInAssignment (f l)
   | EUnsupportedImplements r -> EUnsupportedImplements (map_reason r)
   | EReactElementFunArity (r, s, i) -> EReactElementFunArity (map_reason r, s, i)
-  | EReactRefInRender { usage; kind } -> EReactRefInRender { usage = map_reason usage; kind }
+  | EReactRefInRender { usage; kind; in_hook } ->
+    EReactRefInRender { usage = map_reason usage; kind; in_hook }
   | EUnsupportedSetProto r -> EUnsupportedSetProto (map_reason r)
   | EDuplicateModuleProvider { module_name; provider; conflict } ->
     EDuplicateModuleProvider { module_name; provider = f provider; conflict = f conflict }
@@ -1205,6 +1248,7 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
   | EInvalidPrototype (loc, r) -> EInvalidPrototype (f loc, map_reason r)
   | EUnnecessaryOptionalChain (loc, r) -> EUnnecessaryOptionalChain (f loc, map_reason r)
   | EUnnecessaryInvariant (loc, r) -> EUnnecessaryInvariant (f loc, map_reason r)
+  | EUnnecessaryDeclareTypeOnlyExport loc -> EUnnecessaryDeclareTypeOnlyExport (f loc)
   | EUnexpectedTemporaryBaseType loc -> EUnexpectedTemporaryBaseType (f loc)
   | ECannotDelete (l1, r1) -> ECannotDelete (f l1, map_reason r1)
   | ESignatureVerification sve -> ESignatureVerification (Signature_error.map f sve)
@@ -1301,13 +1345,14 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
       { reason = map_reason reason; enum_reason = map_reason enum_reason; example_member }
   | EEnumMemberUsedAsType { reason; enum_reason } ->
     EEnumMemberUsedAsType { reason = map_reason reason; enum_reason = map_reason enum_reason }
-  | EEnumIncompatible { use_op; reason_lower; reason_upper; representation_type } ->
+  | EEnumIncompatible { use_op; reason_lower; reason_upper; representation_type; casting_syntax } ->
     EEnumIncompatible
       {
         use_op = map_use_op use_op;
         reason_lower = map_reason reason_lower;
         reason_upper = map_reason reason_upper;
         representation_type;
+        casting_syntax;
       }
   | EAssignConstLikeBinding { loc; definition; binding_kind } ->
     EAssignConstLikeBinding { loc = f loc; definition = map_reason definition; binding_kind }
@@ -1335,6 +1380,30 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
         reason_op = map_reason reason_op;
         reason_prop = map_reason reason_prop;
       }
+  | EHookIncompatible { use_op; lower; upper; lower_is_hook; hook_is_annot } ->
+    EHookIncompatible
+      {
+        use_op = map_use_op use_op;
+        lower = map_reason lower;
+        upper = map_reason upper;
+        lower_is_hook;
+        hook_is_annot;
+      }
+  | EHookUniqueIncompatible { use_op; lower; upper } ->
+    EHookUniqueIncompatible
+      { use_op = map_use_op use_op; lower = map_reason lower; upper = map_reason upper }
+  | EHookRuleViolation { callee_loc; call_loc; hook_rule } ->
+    let hook_rule =
+      match hook_rule with
+      | MaybeHook { hooks; non_hooks } ->
+        MaybeHook { hooks = List.map f hooks; non_hooks = List.map f non_hooks }
+      | HookHasIllegalName -> HookHasIllegalName
+      | NonHookHasIllegalName -> NonHookHasIllegalName
+      | HookNotInComponentOrHook -> HookNotInComponentOrHook
+      | ConditionalHook -> ConditionalHook
+    in
+    EHookRuleViolation { callee_loc = f callee_loc; call_loc = f call_loc; hook_rule }
+  | EHookNaming l -> EHookNaming (f l)
   | EObjectThisReference (loc, r) -> EObjectThisReference (f loc, map_reason r)
   | EComponentThisReference { component_loc; this_loc } ->
     EComponentThisReference { component_loc = f component_loc; this_loc = f this_loc }
@@ -1354,7 +1423,7 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
   | EInvalidGraphQL (loc, err) -> EInvalidGraphQL (f loc, err)
   | EAnnotationInference (loc, r1, r2, suggestion) ->
     EAnnotationInference (f loc, map_reason r1, map_reason r2, suggestion)
-  | EAnnotationInferenceRecursive (loc, r) -> EAnnotationInferenceRecursive (f loc, map_reason r)
+  | ETrivialRecursiveDefinition (loc, r) -> ETrivialRecursiveDefinition (f loc, map_reason r)
   | EDefinitionCycle elts ->
     let open Env_api in
     EDefinitionCycle
@@ -1421,6 +1490,20 @@ let rec map_loc_of_error_message (f : 'a -> 'b) : 'a t' -> 'b t' =
     EInvalidTypeCastSyntax { loc = f loc; enabled_casting_syntax }
   | EMissingPlatformSupport { loc; available_platforms; required_platforms } ->
     EMissingPlatformSupport { loc = f loc; available_platforms; required_platforms }
+  | EUnionOptimization { loc; kind } ->
+    let kind =
+      let open UnionRep in
+      match kind with
+      | ContainsUnresolved r -> ContainsUnresolved (map_reason r)
+      | NoCandidateMembers -> NoCandidateMembers
+      | NoCommonKeys -> NoCommonKeys
+      | NonUniqueKeys map ->
+        NonUniqueKeys
+          (NameUtils.Map.map (fun (enum, r1, r2) -> (enum, map_reason r1, map_reason r2)) map)
+    in
+    EUnionOptimization { loc = f loc; kind }
+  | EUnionOptimizationOnNonUnion { loc; arg } ->
+    EUnionOptimizationOnNonUnion { loc = f loc; arg = map_reason arg }
 
 let desc_of_reason r = Reason.desc_of_reason ~unwrap:(is_scalar_reason r) r
 
@@ -1587,8 +1670,6 @@ let util_use_op_of_msg nope util = function
   | ENonConstVarExport _
   | EThisInExportedFunction _
   | EMixedImportAndRequire _
-  | EToplevelLibraryImport _
-  | EUnsupportedStatementInLibdef _
   | EUnsupportedVarianceAnnotation _
   | EExportRenamedDefault _
   | EUnreachable _
@@ -1630,6 +1711,7 @@ let util_use_op_of_msg nope util = function
   | EInvalidPrototype _
   | EUnnecessaryOptionalChain _
   | EUnnecessaryInvariant _
+  | EUnnecessaryDeclareTypeOnlyExport _
   | EUnexpectedTemporaryBaseType _
   | ECannotDelete _
   | ESignatureVerification _
@@ -1651,6 +1733,10 @@ let util_use_op_of_msg nope util = function
   | EMalformedCode _
   | EClassToObject _
   | EMethodUnbinding _
+  | EHookIncompatible _
+  | EHookUniqueIncompatible _
+  | EHookRuleViolation _
+  | EHookNaming _
   | EObjectThisReference _
   | EComponentThisReference _
   | EComponentCase _
@@ -1662,7 +1748,7 @@ let util_use_op_of_msg nope util = function
   | ERecursiveDefinition _
   | EReferenceInAnnotation _
   | EAnnotationInference _
-  | EAnnotationInferenceRecursive _
+  | ETrivialRecursiveDefinition _
   | EDuplicateClassMember _
   | EEmptyArrayNoProvider _
   | EUnusedPromise _
@@ -1684,7 +1770,9 @@ let util_use_op_of_msg nope util = function
   | ERefComponentProp _
   | EInvalidRendersTypeArgument _
   | EInvalidTypeCastSyntax _
-  | EMissingPlatformSupport _ ->
+  | EMissingPlatformSupport _
+  | EUnionOptimization _
+  | EUnionOptimizationOnNonUnion _ ->
     nope
 
 (* Not all messages (i.e. those whose locations are based on use_ops) have locations that can be
@@ -1792,6 +1880,7 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | EUnsafeGettersSetters loc
   | EUnnecessaryOptionalChain (loc, _)
   | EUnnecessaryInvariant (loc, _)
+  | EUnnecessaryDeclareTypeOnlyExport loc
   | EUnusedSuppression loc
   | ECodelessSuppression (loc, _)
   | EDocblockError (loc, _)
@@ -1814,8 +1903,6 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | ENonConstVarExport (loc, _)
   | EThisInExportedFunction loc
   | EMixedImportAndRequire (loc, _)
-  | EToplevelLibraryImport loc
-  | EUnsupportedStatementInLibdef (loc, _)
   | EUnsupportedVarianceAnnotation (loc, _)
   | EExportRenamedDefault { loc; _ }
   | EIndeterminateModuleType loc
@@ -1827,6 +1914,8 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | EInternal (loc, _)
   | EUnsupportedKeyInObject { loc; _ }
   | EAmbiguousNumericKeyWithVariance loc
+  | EHookRuleViolation { call_loc = loc; _ }
+  | EHookNaming loc
   | ECharSetAnnot loc
   | EExportsAnnot loc
   | EPropertyTypeAnnot loc
@@ -1839,7 +1928,7 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | EComponentCase loc
   | EInvalidGraphQL (loc, _)
   | EAnnotationInference (loc, _, _, _)
-  | EAnnotationInferenceRecursive (loc, _)
+  | ETrivialRecursiveDefinition (loc, _)
   | EInvalidCatchParameterAnnotation loc
   | EInvalidMappedType { loc; _ }
   | EFunPredInvalidIndex loc
@@ -1849,7 +1938,9 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | EDuplicateComponentProp { spread = loc; _ }
   | ERefComponentProp { spread = loc; _ }
   | ETypeGuardIncompatibleWithFunctionKind { loc; _ }
-  | EMissingPlatformSupport { loc; _ } ->
+  | EMissingPlatformSupport { loc; _ }
+  | EUnionOptimization { loc; _ }
+  | EUnionOptimizationOnNonUnion { loc; _ } ->
     Some loc
   | ELintSetting (loc, _) -> Some loc
   | ETypeParamArity (loc, _) -> Some loc
@@ -1919,6 +2010,8 @@ let loc_of_msg : 'loc t' -> 'loc option = function
   | EIncompatible _
   | ECannotResolveOpenTvar _
   | EMethodUnbinding _
+  | EHookIncompatible _
+  | EHookUniqueIncompatible _
   | EImplicitInstantiationUnderconstrainedError _
   | EClassToObject _
   | EPrimitiveAsInterface _
@@ -2056,10 +2149,10 @@ let type_casting_examples enabled_casting_syntax =
   let example_colon = "(<expr>: <type>)" in
   let open Options.CastingSyntax in
   match enabled_casting_syntax with
-  | Colon
-  | Both ->
-    (example_colon, example_as)
-  | As -> (example_as, example_colon)
+  | Colon -> (example_colon, example_as)
+  | Both
+  | As ->
+    (example_as, example_colon)
 
 (* Friendly messages are created differently based on the specific error they come from, so
    we collect the ingredients here and pass them to make_error_printable *)
@@ -2099,6 +2192,7 @@ type 'loc friendly_message_recipe =
       loc: 'loc;
       features: Loc.t Flow_errors_utils.Friendly.message_feature list;
       use_op: 'loc Type.virtual_use_op;
+      explanation: Loc.t Flow_errors_utils.Friendly.message_feature list option;
     }
   | PropPolarityMismatch of {
       prop: string option;
@@ -2476,6 +2570,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         features =
           mk_prop_message (Base.Option.map ~f:display_string_of_name x) @ [text " is not readable"];
         use_op;
+        explanation = None;
       }
   | EPropNotWritable { reason_prop; prop_name = x; use_op } ->
     UseOp
@@ -2484,6 +2579,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         features =
           mk_prop_message (Base.Option.map ~f:display_string_of_name x) @ [text " is not writable"];
         use_op;
+        explanation = None;
       }
   | EPropPolarityMismatch
       ((reason_lower, reason_upper), prop, (polarity_lower, polarity_upper), use_op) ->
@@ -2565,6 +2661,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = [ref reason; text " could either behave like a string or like a number"];
         use_op;
+        explanation = None;
       }
   | EComparison (lower, upper) ->
     Normal { features = [text "Cannot compare "; ref lower; text " to "; ref upper; text "."] }
@@ -2611,6 +2708,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             text (str_of_arity arity2);
           ];
         use_op;
+        explanation = None;
       }
   | ETupleRequiredAfterOptional { reason_tuple; reason_required; reason_optional } ->
     let features =
@@ -2641,6 +2739,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             ref upper;
           ];
         use_op;
+        explanation = None;
       }
   | ETupleOutOfBounds { reason; reason_op; length; index; use_op } ->
     UseOp
@@ -2662,6 +2761,7 @@ let friendly_message_of_msg loc_of_aloc msg =
               );
           ];
         use_op;
+        explanation = None;
       }
   | ETupleNonIntegerIndex { reason; index; use_op } ->
     let index_ref =
@@ -2677,6 +2777,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             text " is not an integer";
           ];
         use_op;
+        explanation = None;
       }
   | ETupleUnsafeWrite { reason; use_op } ->
     UseOp
@@ -2684,6 +2785,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = [text "the index must be statically known to write a tuple element"];
         use_op;
+        explanation = None;
       }
   | ETupleElementNotReadable { reason; index; name; use_op } ->
     UseOp
@@ -2691,6 +2793,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = mk_tuple_element_error_message loc_of_aloc ~reason ~index ~name "readable";
         use_op;
+        explanation = None;
       }
   | ETupleElementNotWritable { reason; index; name; use_op } ->
     UseOp
@@ -2698,6 +2801,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = mk_tuple_element_error_message loc_of_aloc ~reason ~index ~name "writable";
         use_op;
+        explanation = None;
       }
   | ETupleElementPolarityMismatch
       { index; reason_lower; polarity_lower; reason_upper; polarity_upper; use_op } ->
@@ -2720,6 +2824,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             ref reason_upper;
           ];
         use_op;
+        explanation = None;
       }
   | EROArrayWrite (reasons, use_op) ->
     let (lower, _) = reasons in
@@ -2728,6 +2833,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason lower;
         features = [text "read-only arrays cannot be written to"];
         use_op;
+        explanation = None;
       }
   | EUnionSpeculationFailed { use_op; reason; reason_op = _; branches } ->
     Speculation { loc = loc_of_reason reason; use_op; branches }
@@ -2770,6 +2876,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason lower;
         features = [text object_kind; ref lower; text " is incompatible with exact "; ref upper];
         use_op;
+        explanation = None;
       }
   | EFunctionIncompatibleWithIndexer ((lower, upper), use_op) ->
     UseOp
@@ -2777,6 +2884,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason lower;
         features = [ref lower; text " is incompatible with indexed "; ref upper];
         use_op;
+        explanation = None;
       }
   | EUnsupportedExact (_, lower) ->
     Normal { features = [text "Cannot create exact type from "; ref lower; text "."] }
@@ -2832,6 +2940,7 @@ let friendly_message_of_msg loc_of_aloc msg =
           [ref invalid_reason; text " is incompatible with "; ref valid_reason; text " since "]
           @ Flow_errors_utils.Friendly.conjunction_concat ~conjunction:"and" invalids;
         use_op;
+        explanation = None;
       }
   | EUnsupportedKeyInObject { key_error_kind; obj_kind; _ } ->
     let suffix =
@@ -2888,6 +2997,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             ref upper;
           ];
         use_op;
+        explanation = None;
       }
   | EPredicateFuncIncompatibility { use_op; reasons = (lower, upper) } ->
     UseOp
@@ -2901,6 +3011,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             text ", which is a predicate function";
           ];
         use_op;
+        explanation = None;
       }
   | EFunPredInvalidIndex _ ->
     Normal
@@ -2924,6 +3035,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason lower;
         features = [ref lower; text " does not appear in the same position as "; ref upper];
         use_op;
+        explanation = None;
       }
   | ETypeGuardParamUnbound reason ->
     Normal
@@ -2999,6 +3111,13 @@ let friendly_message_of_msg loc_of_aloc msg =
           code "const [a, b]: [number, string] = ...";
           text ".";
         ]
+      | AsConstOnNonLiteral ->
+        [
+          text "The ";
+          code "as const";
+          text " assertion can only be used on string, numeric, boolean, object, ";
+          text "or array literals.";
+        ]
       | ObjectPropertyGetSet -> [text "Get/set properties not yet supported."]
       | ObjectPropertyComputedGetSet -> [text "Computed getters and setters are not yet supported."]
       | InvariantSpreadArgument ->
@@ -3038,12 +3157,42 @@ let friendly_message_of_msg loc_of_aloc msg =
         [text "Unsupported static internal slot "; code name; text "."]
       | WithStatement -> [text "Flow doesn't support "; code "with"; text " statements."]
       | ComponentSyntax -> [text "Component syntax is not enabled."]
-      | TypeOfTypeArguments ->
+      | ContextDependentUnsupportedStatement ToplevelLibraryImport ->
         [
-          code "typeof";
-          text " annotation with type arguments is not supported yet. ";
-          text "The type arguments will be ignored.";
+          text "Cannot use an import statement at the toplevel of a library file. ";
+          text "Import statements may only appear inside a ";
+          code "declare module";
+          text ". The statement will be ignored.";
         ]
+      | ContextDependentUnsupportedStatement NonLibdefToplevelDeclareModule ->
+        [
+          code "declare module";
+          text " statement is only supported at the toplevel of a library file.";
+        ]
+      | ContextDependentUnsupportedStatement (UnsupportedStatementInLibdef kind) ->
+        [
+          text "Cannot use ";
+          code kind;
+          text " statements in a library file. ";
+          text "The statement will be ignored.";
+        ]
+      | ContextDependentUnsupportedStatement (UnsupportedStatementInDeclareModule kind) ->
+        [
+          text "Cannot use ";
+          code kind;
+          text " statements with in ";
+          code "declare module";
+          text ". The statement will be ignored.";
+        ]
+      | ContextDependentUnsupportedStatement (UnsupportedStatementInDeclareNamespace kind) ->
+        [
+          text "Cannot use ";
+          code kind;
+          text " statements with in ";
+          code "declare namespace";
+          text ". The statement will be ignored.";
+        ]
+      | DeclareNamespace -> [code "declare namespace"; text " statement is not supported yet."]
     in
     Normal { features }
   | EUseArrayLiteral _ ->
@@ -3107,13 +3256,21 @@ let friendly_message_of_msg loc_of_aloc msg =
        in the error message is concretized already; making Scopes polymorphic is not a good idea *)
     let x = mk_reason desc (ALoc.to_loc_exn entry_loc) in
     let ref_x = Flow_errors_utils.Friendly.ref x in
-    let type_as_value_msg () =
-      [
-        text "Cannot use type ";
-        ref_x;
-        text " as a value. ";
-        text "Types are erased and don't exist at runtime.";
-      ]
+    let type_as_value_msg ~type_only_namespace =
+      if type_only_namespace then
+        [
+          text "Cannot use type-only namespace ";
+          ref_x;
+          text " as a value. ";
+          text "Type-only namespaces are erased and don't exist at runtime.";
+        ]
+      else
+        [
+          text "Cannot use type ";
+          ref_x;
+          text " as a value. ";
+          text "Types are erased and don't exist at runtime.";
+        ]
     in
     let features =
       match binding_error with
@@ -3137,8 +3294,8 @@ let friendly_message_of_msg loc_of_aloc msg =
             text " because the declaration ";
             text "either comes later or was skipped.";
           ]
-      | ETypeInValuePosition { imported = true; name } ->
-        type_as_value_msg ()
+      | ETypeInValuePosition { imported = true; type_only_namespace; name } ->
+        type_as_value_msg ~type_only_namespace
         @ [
             text " If the exported binding can also be used as a value, try importing it using ";
             code (spf "import %s" name);
@@ -3150,9 +3307,8 @@ let friendly_message_of_msg loc_of_aloc msg =
             code (spf "import type {%s}" name);
             text ".";
           ]
-      | ETypeInValuePosition { imported = false; name = _ }
-      | ETypeAliasInValuePosition ->
-        type_as_value_msg ()
+      | ETypeInValuePosition { imported = false; type_only_namespace; name = _ } ->
+        type_as_value_msg ~type_only_namespace
       | EConstReassigned
       | EConstParamReassigned ->
         [text "Cannot reassign constant "; ref_x; text "."]
@@ -3308,28 +3464,6 @@ let friendly_message_of_msg loc_of_aloc msg =
             text " statements in the same file.";
           ];
       }
-  | EToplevelLibraryImport _ ->
-    Normal
-      {
-        features =
-          [
-            text "Cannot use an import statement at the toplevel of a library file. ";
-            text "Import statements may only appear inside a ";
-            code "declare module";
-            text ". The statement will be ignored.";
-          ];
-      }
-  | EUnsupportedStatementInLibdef (_, kind) ->
-    Normal
-      {
-        features =
-          [
-            text "Cannot use ";
-            text kind;
-            text " statements in a library file. ";
-            text "The statement will be ignored.";
-          ];
-      }
   | EUnsupportedVarianceAnnotation (_, kind) ->
     Normal
       {
@@ -3429,7 +3563,13 @@ let friendly_message_of_msg loc_of_aloc msg =
     )
   | EUnreachable _ -> Normal { features = [text "Unreachable code."] }
   | EInvalidObjectKit { reason; reason_op = _; use_op } ->
-    UseOp { loc = loc_of_reason reason; features = [ref reason; text " is not an object"]; use_op }
+    UseOp
+      {
+        loc = loc_of_reason reason;
+        features = [ref reason; text " is not an object"];
+        explanation = None;
+        use_op;
+      }
   | EInvalidTypeof (_, typename) ->
     let features =
       [
@@ -3570,6 +3710,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = [ref reason; text " is not a React component"];
         use_op;
+        explanation = None;
       }
   | EInvalidReactConfigType { reason; use_op } ->
     UseOp
@@ -3577,6 +3718,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         loc = loc_of_reason reason;
         features = [ref reason; text " cannot calculate config"];
         use_op;
+        explanation = None;
       }
   | ECannotResolveOpenTvar { use_op; reason; blame_reasons } ->
     let rec refs = function
@@ -3596,6 +3738,7 @@ let friendly_message_of_msg loc_of_aloc msg =
           ]
           @ refs blame_reasons;
         use_op;
+        explanation = None;
       }
   | EReactElementFunArity (_, fn, n) ->
     let features =
@@ -3616,7 +3759,13 @@ let friendly_message_of_msg loc_of_aloc msg =
       ]
     in
     Normal { features }
-  | EReactRefInRender { usage; kind = Argument } ->
+  | EReactRefInRender { usage; kind = Argument; in_hook } ->
+    let context =
+      if in_hook then
+        text "within hooks"
+      else
+        text "during render"
+    in
     let features =
       [
         text "Cannot pass ";
@@ -3625,11 +3774,19 @@ let friendly_message_of_msg loc_of_aloc msg =
         code "ref";
         text " values may not be passed to functions because they could read the ref value (";
         code "current";
-        text ") property) during render.  (https://react.dev/reference/react/useRef).";
+        text ") property) ";
+        context;
+        text ". (https://react.dev/reference/react/useRef).";
       ]
     in
     Normal { features }
-  | EReactRefInRender { usage; kind = Access } ->
+  | EReactRefInRender { usage; kind = Access; in_hook } ->
+    let context =
+      if in_hook then
+        text "within hooks"
+      else
+        text "during render"
+    in
     let features =
       [
         text "Cannot read ";
@@ -3638,7 +3795,9 @@ let friendly_message_of_msg loc_of_aloc msg =
         ref usage;
         text " because ";
         code "ref";
-        text " values may not be read during render.  (https://react.dev/reference/react/useRef).";
+        text " values may not be read ";
+        context;
+        text ". (https://react.dev/reference/react/useRef).";
       ]
     in
     Normal { features }
@@ -3650,7 +3809,12 @@ let friendly_message_of_msg loc_of_aloc msg =
       | n -> spf "no more than %d arguments are expected by" n
     in
     UseOp
-      { loc = loc_of_reason unused_reason; features = [text msg; text " "; ref def_reason]; use_op }
+      {
+        loc = loc_of_reason unused_reason;
+        features = [text msg; text " "; ref def_reason];
+        explanation = None;
+        use_op;
+      }
   | EEscapedGeneric
       { is_this = false; reason; blame_reason; annot_reason; use_op; bound_loc; bound_name }
     when blame_reason = reason ->
@@ -3667,7 +3831,13 @@ let friendly_message_of_msg loc_of_aloc msg =
           [text " (try adding a type annotation to "; ref annot_reason; text ")"]
       )
     in
-    UseOp { loc = loc_of_reason reason; features = features @ annot_features; use_op }
+    UseOp
+      {
+        loc = loc_of_reason reason;
+        features = features @ annot_features;
+        explanation = None;
+        use_op;
+      }
   | EEscapedGeneric
       { is_this = false; reason; blame_reason; annot_reason; use_op; bound_loc; bound_name } ->
     let features =
@@ -3684,7 +3854,13 @@ let friendly_message_of_msg loc_of_aloc msg =
           [text " (try adding a type annotation to "; ref annot_reason; text ")"]
       )
     in
-    UseOp { loc = loc_of_reason reason; features = features @ annot_features; use_op }
+    UseOp
+      {
+        loc = loc_of_reason reason;
+        features = features @ annot_features;
+        explanation = None;
+        use_op;
+      }
   | EEscapedGeneric
       { is_this = true; reason; blame_reason; annot_reason; use_op; bound_loc; bound_name }
     when match desc_of_reason reason with
@@ -3704,7 +3880,13 @@ let friendly_message_of_msg loc_of_aloc msg =
           [text " (try adding a type annotation to "; ref annot_reason; text ")"]
       )
     in
-    UseOp { loc = loc_of_reason reason; features = features @ annot_features; use_op }
+    UseOp
+      {
+        loc = loc_of_reason reason;
+        features = features @ annot_features;
+        explanation = None;
+        use_op;
+      }
   | EEscapedGeneric
       { is_this = true; reason; blame_reason; annot_reason; use_op; bound_loc; bound_name } ->
     let features =
@@ -3721,7 +3903,13 @@ let friendly_message_of_msg loc_of_aloc msg =
           [text " (try adding a type annotation to "; ref annot_reason; text ")"]
       )
     in
-    UseOp { loc = loc_of_reason reason; features = features @ annot_features; use_op }
+    UseOp
+      {
+        loc = loc_of_reason reason;
+        features = features @ annot_features;
+        explanation = None;
+        use_op;
+      }
   | EUnsupportedSetProto _ -> Normal { features = [text "Mutating this prototype is unsupported."] }
   | EDuplicateModuleProvider { module_name; provider; conflict } ->
     let file_of_loc l = l |> loc_of_aloc |> Loc.source in
@@ -4083,6 +4271,11 @@ let friendly_message_of_msg loc_of_aloc msg =
       ]
     in
     Normal { features }
+  | EUnnecessaryDeclareTypeOnlyExport _ ->
+    let features =
+      [text "The "; code "declare"; text " keyword is unnecessary for type exports."]
+    in
+    Normal { features }
   | EPrimitiveAsInterface { use_op; reason; interface_reason; kind } ->
     let kind_str =
       match kind with
@@ -4101,7 +4294,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         text " to turn it into an object and attempt to use it as a subtype of an interface";
       ]
     in
-    UseOp { loc = loc_of_reason reason; features; use_op }
+    UseOp { loc = loc_of_reason reason; features; explanation = None; use_op }
   | ECannotSpreadInterface { spread_reason; interface_reason; use_op } ->
     let features =
       [
@@ -4113,7 +4306,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         text "track the own-ness of their properties. Try using an object type instead";
       ]
     in
-    UseOp { loc = loc_of_reason spread_reason; features; use_op }
+    UseOp { loc = loc_of_reason spread_reason; features; explanation = None; use_op }
   | ECannotSpreadIndexerOnRight { spread_reason; object_reason; key_reason; use_op } ->
     let features =
       [
@@ -4129,7 +4322,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         text " first or remove the indexer";
       ]
     in
-    UseOp { loc = loc_of_reason spread_reason; features; use_op }
+    UseOp { loc = loc_of_reason spread_reason; features; explanation = None; use_op }
   | EUnableToSpread { spread_reason; object1_reason; object2_reason; propname; error_kind; use_op }
     ->
     let (error_reason, fix_suggestion) =
@@ -4164,7 +4357,7 @@ let friendly_message_of_msg loc_of_aloc msg =
       ]
       @ fix_suggestion
     in
-    UseOp { loc = loc_of_reason spread_reason; features; use_op }
+    UseOp { loc = loc_of_reason spread_reason; features; explanation = None; use_op }
   | EInexactMayOverwriteIndexer { spread_reason; key_reason; value_reason; object2_reason; use_op }
     ->
     let features =
@@ -4183,7 +4376,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         text " exact";
       ]
     in
-    UseOp { loc = loc_of_reason spread_reason; features; use_op }
+    UseOp { loc = loc_of_reason spread_reason; features; explanation = None; use_op }
   | EExponentialSpread { reason; reasons_for_operand1; reasons_for_operand2 } ->
     let format_reason_group { first_reason; second_reason } =
       match second_reason with
@@ -4460,15 +4653,23 @@ let friendly_message_of_msg loc_of_aloc msg =
       ]
     in
     Normal { features }
-  | EEnumIncompatible { reason_lower; reason_upper; use_op; representation_type } ->
+  | EEnumIncompatible { reason_lower; reason_upper; use_op; representation_type; casting_syntax } ->
     let suggestion =
       match representation_type with
       | Some representation_type ->
+        let example =
+          let open Options.CastingSyntax in
+          match casting_syntax with
+          | Colon -> spf "(<expr>: %s)" representation_type
+          | Both
+          | As ->
+            spf "<expr> as %s" representation_type
+        in
         [
           text "You can explicitly cast your enum value to a ";
           text representation_type;
           text " using ";
-          code (spf "(<expression>: %s)" representation_type);
+          code example;
         ]
       | None -> []
     in
@@ -4650,6 +4851,7 @@ let friendly_message_of_msg loc_of_aloc msg =
             text ". Either add explicit type arguments or cast the expression to your expected type";
           ];
         loc = loc_of_reason reason_call;
+        explanation = None;
       }
   | EClassToObject (reason_class, reason_obj, use_op) ->
     let features =
@@ -4662,7 +4864,7 @@ let friendly_message_of_msg loc_of_aloc msg =
         text " as an interface";
       ]
     in
-    UseOp { loc = loc_of_reason reason_class; features; use_op }
+    UseOp { loc = loc_of_reason reason_class; features; explanation = None; use_op }
   | EMethodUnbinding { use_op; reason_op; reason_prop } ->
     let context =
       Flow_errors_utils.Friendly.(
@@ -4677,6 +4879,120 @@ let friendly_message_of_msg loc_of_aloc msg =
             ref reason_op; text " cannot be unbound from the "; context; text " where it was defined";
           ];
         use_op;
+        explanation = None;
+      }
+  | EHookIncompatible { use_op; lower; upper; lower_is_hook; hook_is_annot } ->
+    let loc = loc_of_reason lower in
+    let (lower, upper) =
+      let hook_wording =
+        if hook_is_annot then
+          text "hook type annotation"
+        else
+          text "hook"
+      in
+      if lower_is_hook then
+        ([ref lower; text " is a React "; hook_wording], [ref upper; text " is not a hook"])
+      else
+        ([ref lower; text " is not a React hook"], [ref upper; text " is a "; hook_wording])
+    in
+    UseOp
+      {
+        loc;
+        features = lower @ [text " but "] @ upper;
+        use_op;
+        explanation =
+          Some
+            [
+              text
+                "React hooks and other functions are not compatible with each other, because hooks cannot be called conditionally";
+            ];
+      }
+  | EHookUniqueIncompatible { use_op; lower; upper } ->
+    UseOp
+      {
+        loc = loc_of_reason lower;
+        features = [ref lower; text " and "; ref upper; text " are different React hooks"];
+        use_op;
+        explanation =
+          Some
+            [
+              text
+                "Different React hooks are not compatible with each other, because hooks cannot be called conditionally";
+            ];
+      }
+  | EHookNaming _ ->
+    Normal { features = [text "Hooks must have names that begin with "; code "use"; text "."] }
+  | EHookRuleViolation { callee_loc; hook_rule = ConditionalHook; call_loc = _ } ->
+    Normal
+      {
+        features =
+          [
+            text "Cannot call ";
+            ref (mk_reason (RCustom "hook") callee_loc);
+            text " because React hooks cannot be called in conditional contexts.";
+          ];
+      }
+  | EHookRuleViolation { callee_loc; hook_rule = HookHasIllegalName; call_loc = _ } ->
+    Normal
+      {
+        features =
+          [
+            text "Cannot call hook because ";
+            ref (mk_reason (RCustom "callee") callee_loc);
+            text "'s name does not conform to React hook rules. Hook names must begin with ";
+            code "use";
+            text " followed by a capitalized letter.";
+          ];
+      }
+  | EHookRuleViolation { callee_loc; hook_rule = MaybeHook { hooks; non_hooks }; call_loc = _ } ->
+    let hook_blame =
+      match hooks with
+      | [] -> [text "React hook"]
+      | x :: _ -> [ref (mk_reason (RCustom "React hook") x)]
+    in
+    let non_hook_blame =
+      match non_hooks with
+      | [] -> [text "regular function definition"]
+      | x :: _ -> [text "regular "; ref (mk_reason (RCustom "function definition") x)]
+    in
+    Normal
+      {
+        features =
+          [
+            text "Cannot call function because ";
+            ref (mk_reason (RCustom "callee") callee_loc);
+            (* Kinda crummy, hopefully doesn't come up often *)
+            text " may be a ";
+          ]
+          @ hook_blame
+          @ [text " or may be a "]
+          @ non_hook_blame
+          @ [
+              text
+                ". Function callees must either be definitely a hook or definitely not a hook, because the same hook must be called every time a component renders.";
+            ];
+      }
+  | EHookRuleViolation { callee_loc; hook_rule = NonHookHasIllegalName; call_loc = _ } ->
+    Normal
+      {
+        features =
+          [
+            text "Cannot call function because ";
+            ref (mk_reason (RCustom "callee") callee_loc);
+            text " has a name that indicates it is a React hook (starting with ";
+            code "use";
+            text ") but it is defined as a non-hook function.";
+          ];
+      }
+  | EHookRuleViolation { callee_loc; hook_rule = HookNotInComponentOrHook; call_loc = _ } ->
+    Normal
+      {
+        features =
+          [
+            text "Cannot call ";
+            ref (mk_reason (RCustom "hook") callee_loc);
+            text " because React hooks can only be called within components or hooks.";
+          ];
       }
   | EInvalidGraphQL (_, err) ->
     let features =
@@ -4707,14 +5023,8 @@ let friendly_message_of_msg loc_of_aloc msg =
       @ suggestion
     in
     Normal { features }
-  | EAnnotationInferenceRecursive (_, reason) ->
-    let features =
-      [
-        text "Invalid trivially recursive definition of ";
-        desc reason;
-        text " in an export position. ";
-      ]
-    in
+  | ETrivialRecursiveDefinition (_, reason) ->
+    let features = [text "Invalid trivially recursive definition of "; desc reason; text ". "] in
     Normal { features }
   | ERecursiveDefinition { reason; recursion; annot_locs } ->
     let (itself, tl_recur) =
@@ -5075,28 +5385,33 @@ let friendly_message_of_msg loc_of_aloc msg =
               text "it's the default if you don't have a variance annotation.";
             ];
         }
-    | TSTypeCast { kind; enabled_casting_syntax } ->
+    | TSAsConst enabled_casting_syntax ->
       let (example, _) = type_casting_examples enabled_casting_syntax in
       let features =
-        match kind with
-        | `AsConst ->
-          [
-            text "Flow does not have an equivalent of ";
-            code "as const";
-            text ". ";
-            text "Try adding a type annotation instead. ";
-            text "You can cast an expression to a type using the form ";
-            code example;
-            text ".";
-          ]
-        | `Satisfies ->
-          [
-            text "The closest equivalent of TypeScript's ";
-            code "satisfies";
-            text " expression in Flow is to do a cast in the form ";
-            code example;
-            text ".";
-          ]
+        [
+          code "as const";
+          text " syntax is not enabled by default. ";
+          text "Try adding a type annotation instead. ";
+          text "You can cast an expression to a type using the form ";
+          code example;
+          text ". ";
+          text "Alternatively, you can enable experimental support for ";
+          text "the feature by setting ";
+          code "experimental.as_const=true";
+          text " in your flow config.";
+        ]
+      in
+      Normal { features }
+    | TSSatisfiesType enabled_casting_syntax ->
+      let (example, _) = type_casting_examples enabled_casting_syntax in
+      let features =
+        [
+          text "The closest equivalent of TypeScript's ";
+          code "satisfies";
+          text " expression in Flow is to do a cast in the form ";
+          code example;
+          text ".";
+        ]
       in
       Normal { features }
     | TSReadonlyType (Some arg_kind) ->
@@ -5294,6 +5609,71 @@ let friendly_message_of_msg loc_of_aloc msg =
       @ [text " is missing."]
     in
     Normal { features }
+  | EUnionOptimization { loc = _; kind } ->
+    let string_of_union_enum =
+      let open Type.UnionEnum in
+      function
+      | Str s -> code (spf "`%s`" (display_string_of_name s))
+      | Num f -> code (spf "%f" f)
+      | Bool b -> code (spf "%b" b)
+      | BigInt (_, b) -> code b
+      | Void -> code "undefined"
+      | Null -> code "null"
+    in
+    let string_of_non_unique_key (name, (enum, r, r')) =
+      [
+        text "Key ";
+        code (display_string_of_name name);
+        text " has value ";
+        string_of_union_enum enum;
+        text " in both ";
+        ref r;
+        text " and ";
+        ref r';
+        text ".";
+      ]
+    in
+    let kind =
+      let open Type.UnionRep in
+      match kind with
+      | ContainsUnresolved r ->
+        [
+          text "The form of ";
+          ref r;
+          text " is not supported for optimization. ";
+          text "Try replacing this type with a simpler alternative.";
+        ]
+      | NoCandidateMembers ->
+        [
+          text "The union needs to include in its members ";
+          text "at least one of: ";
+          text "object type, string literal, numeric literal, ";
+          text "boolean literal, void or null types.";
+        ]
+      | NoCommonKeys -> [text "There are no common keys among the members of the union."]
+      | NonUniqueKeys map ->
+        let bindings = NameUtils.Map.bindings map in
+        begin
+          match bindings with
+          | [] -> [text ""]
+          | [x] -> string_of_non_unique_key x
+          | xs ->
+            let keys =
+              xs
+              |> Base.List.map ~f:string_of_non_unique_key
+              |> Base.List.map ~f:(fun x -> [text " - "] @ x @ [text "\n"])
+              |> Base.List.concat
+            in
+            text "The following keys have non-unique values:\n" :: keys
+        end
+    in
+    let features = text "Union could not be optimized internally. " :: kind in
+    Normal { features }
+  | EUnionOptimizationOnNonUnion { loc = _; arg } ->
+    let features =
+      [text "Invalid use of $Flow$EnforceOptimized on non-union type "; ref arg; text "."]
+    in
+    Normal { features }
 
 let defered_in_speculation = function
   | EUntypedTypeImport _
@@ -5309,10 +5689,14 @@ let defered_in_speculation = function
   | ESketchyNumberLint _
   | EUnnecessaryOptionalChain _
   | EUnnecessaryInvariant _
+  | EUnnecessaryDeclareTypeOnlyExport _
   | EImplicitInexactObject _
   | EAmbiguousObjectType _
   | EEnumNotAllChecked { default_case = Some _; _ }
   | EUninitializedInstanceProperty _
+  | ETrivialRecursiveDefinition _
+  | EAnyValueUsedAsType _
+  | EValueUsedAsType _
   | EUnusedPromise _
   | EImplicitInstantiationUnderconstrainedError _ ->
     true
@@ -5323,7 +5707,7 @@ open Error_codes
 let react_rule_of_use_op use_op ~default =
   let code_of_frame acc = function
     | ReactDeepReadOnly (_, HookReturn) -> Some ReactRuleHookMutation
-    | ReactDeepReadOnly (_, (DROAnnot | Props)) -> Some ReactRulePropsMutation
+    | ReactDeepReadOnly (_, (Props | HookArg)) -> Some ReactRulePropsMutation
     | _ -> acc
   in
   Base.Option.first_some (fold_use_op (fun _ -> None) code_of_frame use_op) (Some default)
@@ -5392,9 +5776,7 @@ let error_code_of_message err : error_code option =
     | ENameAlreadyBound -> Some NameAlreadyBound
     | EVarRedeclaration -> Some NameAlreadyBound
     | EReferencedBeforeDeclaration -> Some ReferenceBeforeDeclaration
-    | ETypeInValuePosition _
-    | ETypeAliasInValuePosition ->
-      Some TypeAsValue
+    | ETypeInValuePosition _ -> Some TypeAsValue
     | EConstReassigned
     | EConstParamReassigned ->
       Some ReassignConst
@@ -5514,8 +5896,6 @@ let error_code_of_message err : error_code option =
   end
   | EMissingTypeArgs _ -> Some MissingTypeArg
   | EMixedImportAndRequire _ -> Some MixedImportAndRequire
-  | EToplevelLibraryImport _ -> Some ToplevelLibraryImport
-  | EUnsupportedStatementInLibdef _ -> Some UnsupportedStatementInLibdef
   | EUnsupportedVarianceAnnotation _ -> Some UnsupportedVarianceAnnotation
   | ENoDefaultExport (_, _, _) -> Some MissingExport
   | ENoNamedExport (_, _, _, _) -> Some MissingExport
@@ -5592,9 +5972,14 @@ let error_code_of_message err : error_code option =
     Some ValueAsType
   | EClassToObject _ -> Some ClassObject
   | EMethodUnbinding _ -> Some MethodUnbinding
+  | EHookIncompatible _
+  | EHookUniqueIncompatible _ ->
+    Some ReactRuleHookIncompatible
+  | EHookRuleViolation _ -> Some ReactRuleHook
+  | EHookNaming _ -> Some ReactRuleHook
   | EInvalidGraphQL _ -> Some InvalidGraphQL
   | EAnnotationInference _ -> Some InvalidExportedAnnotation
-  | EAnnotationInferenceRecursive _ -> Some InvalidExportedAnnotationRecursive
+  | ETrivialRecursiveDefinition _ -> Some RecursiveDefinition
   | EDefinitionCycle _ -> Some DefinitionCycle
   | ERecursiveDefinition _ -> Some RecursiveDefinition
   | EReferenceInAnnotation _ -> Some RecursiveDefinition
@@ -5604,6 +5989,7 @@ let error_code_of_message err : error_code option =
   | EBigIntNumCoerce _ -> Some BigIntNumCoerce
   | EInvalidCatchParameterAnnotation _ -> Some InvalidCatchParameterAnnotation
   | EInvalidRendersTypeArgument _ -> Some InvalidRendersTypeArgument
+  | EUnnecessaryDeclareTypeOnlyExport _ -> Some UnnecessaryDeclareTypeOnlyExport
   (* lints should match their lint name *)
   | EUntypedTypeImport _
   | EUntypedImport _
@@ -5631,3 +6017,5 @@ let error_code_of_message err : error_code option =
   | ETSSyntax _ -> Some TSSyntax
   | EInvalidTypeCastSyntax _ -> Some InvalidTypeCastSyntax
   | EMissingPlatformSupport _ -> Some MissingPlatformSupport
+  | EUnionOptimization _ -> Some UnionUnoptimizable
+  | EUnionOptimizationOnNonUnion _ -> Some UnionUnoptimizable

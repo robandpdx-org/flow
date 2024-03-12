@@ -131,6 +131,8 @@ class ['loc] mapper =
         id_loc this#declare_module_exports loc annot stmt (fun annot ->
             (loc, DeclareModuleExports annot)
         )
+      | (loc, DeclareNamespace n) ->
+        id_loc this#declare_namespace loc n stmt (fun n -> (loc, DeclareNamespace n))
       | (loc, DeclareOpaqueType otype) ->
         id_loc this#opaque_type loc otype stmt (fun otype -> (loc, DeclareOpaqueType otype))
       | (loc, DeclareTypeAlias stuff) ->
@@ -209,6 +211,8 @@ class ['loc] mapper =
       | (loc, Array x) -> id_loc this#array loc x expr (fun x -> (loc, Array x))
       | (loc, ArrowFunction x) ->
         id_loc this#arrow_function loc x expr (fun x -> (loc, ArrowFunction x))
+      | (loc, AsConstExpression x) ->
+        id_loc this#as_const_expression loc x expr (fun x -> (loc, AsConstExpression x))
       | (loc, AsExpression x) ->
         id_loc this#as_expression loc x expr (fun x -> (loc, AsExpression x))
       | (loc, Assignment x) -> id_loc this#assignment loc x expr (fun x -> (loc, Assignment x))
@@ -251,7 +255,7 @@ class ['loc] mapper =
         id_loc this#template_literal loc x expr (fun x -> (loc, TemplateLiteral x))
       | (loc, This x) -> id_loc this#this_expression loc x expr (fun x -> (loc, This x))
       | (loc, TypeCast x) -> id_loc this#type_cast loc x expr (fun x -> (loc, TypeCast x))
-      | (loc, TSTypeCast x) -> id_loc this#ts_type_cast loc x expr (fun x -> (loc, TSTypeCast x))
+      | (loc, TSSatisfies x) -> id_loc this#ts_satisfies loc x expr (fun x -> (loc, TSSatisfies x))
       | (loc, Unary x) -> id_loc this#unary_expression loc x expr (fun x -> (loc, Unary x))
       | (loc, Update x) -> id_loc this#update_expression loc x expr (fun x -> (loc, Update x))
       | (loc, Yield x) -> id_loc this#yield loc x expr (fun x -> (loc, Yield x))
@@ -274,6 +278,16 @@ class ['loc] mapper =
       | Hole _ -> element
 
     method arrow_function loc (expr : ('loc, 'loc) Ast.Function.t) = this#function_ loc expr
+
+    method as_const_expression _loc (expr : ('loc, 'loc) Ast.Expression.AsConstExpression.t) =
+      let open Ast.Expression.AsConstExpression in
+      let { expression; comments } = expr in
+      let expression' = this#expression expression in
+      let comments' = this#syntax_opt comments in
+      if expression' == expression && comments' == comments then
+        expr
+      else
+        { expression = expression'; comments = comments' }
 
     method as_expression _loc (expr : ('loc, 'loc) Ast.Expression.AsExpression.t) =
       let open Ast.Expression.AsExpression in
@@ -902,13 +916,13 @@ class ['loc] mapper =
 
     method declare_module _loc (m : ('loc, 'loc) Ast.Statement.DeclareModule.t) =
       let open Ast.Statement.DeclareModule in
-      let { id; body; kind; comments } = m in
+      let { id; body; comments } = m in
       let body' = map_loc this#block body in
       let comments' = this#syntax_opt comments in
       if body' == body && comments == comments' then
         m
       else
-        { id; body = body'; kind; comments = comments' }
+        { id; body = body'; comments = comments' }
 
     method declare_module_exports _loc (exports : ('loc, 'loc) Ast.Statement.DeclareModuleExports.t)
         =
@@ -920,6 +934,17 @@ class ['loc] mapper =
         exports
       else
         { annot = annot'; comments = comments' }
+
+    method declare_namespace _loc (m : ('loc, 'loc) Ast.Statement.DeclareNamespace.t) =
+      let open Ast.Statement.DeclareNamespace in
+      let { id; body; comments } = m in
+      let id' = this#pattern_identifier ~kind:Ast.Variable.Const id in
+      let body' = map_loc this#block body in
+      let comments' = this#syntax_opt comments in
+      if id' == id && body' == body && comments == comments' then
+        m
+      else
+        { id = id'; body = body'; comments = comments' }
 
     method declare_type_alias loc (decl : ('loc, 'loc) Ast.Statement.TypeAlias.t) =
       this#type_alias loc decl
@@ -1316,6 +1341,7 @@ class ['loc] mapper =
         return;
         tparams;
         comments = func_comments;
+        hook;
       } =
         ft
       in
@@ -1345,6 +1371,7 @@ class ['loc] mapper =
           return = return';
           tparams = tparams';
           comments = func_comments';
+          hook;
         }
 
     method label_identifier (ident : ('loc, 'loc) Ast.Identifier.t) = this#identifier ident
@@ -1914,6 +1941,7 @@ class ['loc] mapper =
         body;
         async;
         generator;
+        hook;
         predicate;
         return;
         tparams;
@@ -1947,6 +1975,7 @@ class ['loc] mapper =
           body = body';
           async;
           generator;
+          hook;
           predicate = predicate';
           tparams = tparams';
           sig_loc;
@@ -3056,25 +3085,16 @@ class ['loc] mapper =
       else
         { expression = expression'; annot = annot'; comments = comments' }
 
-    method ts_type_cast _loc (expr : ('loc, 'loc) Ast.Expression.TSTypeCast.t) =
-      let open Ast.Expression.TSTypeCast in
-      let { expression; kind; comments } = expr in
+    method ts_satisfies _loc (expr : ('loc, 'loc) Ast.Expression.TSSatisfies.t) =
+      let open Ast.Expression.TSSatisfies in
+      let { expression; annot; comments } = expr in
       let expression' = this#expression expression in
-      let kind' =
-        match kind with
-        | AsConst -> kind
-        | Satisfies annot ->
-          let annot' = this#type_ annot in
-          if annot == annot' then
-            kind
-          else
-            Satisfies annot'
-      in
+      let annot' = this#type_annotation annot in
       let comments' = this#syntax_opt comments in
-      if expression' == expression && comments' == comments then
+      if expression' == expression && annot' = annot && comments' == comments then
         expr
       else
-        { expression = expression'; kind = kind'; comments = comments' }
+        { expression = expression'; annot = annot'; comments = comments' }
 
     method unary_expression _loc (expr : ('loc, 'loc) Flow_ast.Expression.Unary.t) =
       let open Flow_ast.Expression.Unary in

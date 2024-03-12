@@ -710,6 +710,11 @@ let file_options =
       module_resource_exts = FlowConfig.module_resource_exts flowconfig;
       multi_platform = FlowConfig.multi_platform flowconfig |> Base.Option.value ~default:false;
       multi_platform_extensions = FlowConfig.multi_platform_extensions flowconfig;
+      multi_platform_ambient_supports_platform_directory_overrides =
+        FlowConfig.multi_platform_ambient_supports_platform_directory_overrides flowconfig
+        |> Base.List.map ~f:(fun (path, platforms) ->
+               (Files.expand_project_root_token ~root path, platforms)
+           );
       node_resolver_dirnames = FlowConfig.node_resolver_dirnames flowconfig;
     }
 
@@ -871,7 +876,6 @@ module Options_flags = struct
     merge_timeout: int option;
     munge_underscore_members: bool;
     no_flowlib: bool;
-    precise_dependents: bool option;
     profile: bool;
     quiet: bool;
     slow_to_check_logging: Slow_to_check_logging.t;
@@ -883,6 +887,7 @@ module Options_flags = struct
     include_suppressions: bool;
     estimate_recheck_time: bool option;
     long_lived_workers: bool option;
+    blocking_worker_communication: bool option;
     distributed: bool;
   }
 end
@@ -930,7 +935,6 @@ let options_flags =
   let collect_options_flags
       main
       debug
-      precise_dependents
       profile
       all
       wait_for_recheck
@@ -950,6 +954,7 @@ let options_flags =
       include_suppressions
       estimate_recheck_time
       long_lived_workers
+      blocking_worker_communication
       distributed =
     (match merge_timeout with
     | Some timeout when timeout < 0 ->
@@ -959,7 +964,6 @@ let options_flags =
     main
       {
         Options_flags.debug;
-        precise_dependents;
         profile;
         all;
         wait_for_recheck;
@@ -979,6 +983,7 @@ let options_flags =
         include_suppressions;
         estimate_recheck_time;
         long_lived_workers;
+        blocking_worker_communication;
         distributed;
       }
   in
@@ -987,7 +992,6 @@ let options_flags =
       prev
       |> collect collect_options_flags
       |> flag "--debug" truthy ~doc:"Print debug info during typecheck" ~env:"FLOW_DEBUG"
-      |> flag "--precise-dependents" (optional bool) ~doc:""
       |> profile_flag
       |> flag "--all" truthy ~doc:"Typecheck all files, not just @flow"
       |> flag
@@ -1029,6 +1033,11 @@ let options_flags =
          not be part of our public API, so not included in the docs. *)
       |> flag "--estimate-recheck-time" (optional bool) ~doc:"" ~env:"FLOW_ESTIMATE_RECHECK_TIME"
       |> flag "--long-lived-workers" (optional bool) ~doc:"" ~env:"FLOW_LONG_LIVED_WORKERS"
+      |> flag
+           "--blocking_worker_communication"
+           (optional bool)
+           ~doc:""
+           ~env:"FLOW_BLOCKING_WORKER_COMMUNICATION"
       |> flag "--distributed" truthy ~doc:""
     )
 
@@ -1327,9 +1336,6 @@ let make_options
         Base.Option.value (FlowConfig.format_single_quotes flowconfig) ~default:false;
     }
   in
-  let opt_direct_dependent_files_fix =
-    Base.Option.value (FlowConfig.direct_dependent_files_fix flowconfig) ~default:true
-  in
   let strict_mode = FlowConfig.strict_mode flowconfig in
   let opt_temp_dir = File_path.to_string temp_dir in
   let opt_log_file = server_log_file ~flowconfig_name ~tmp_dir:opt_temp_dir root in
@@ -1344,7 +1350,7 @@ let make_options
     opt_babel_loose_array_spread =
       Base.Option.value (FlowConfig.babel_loose_array_spread flowconfig) ~default:false;
     opt_casting_syntax =
-      Base.Option.value (FlowConfig.casting_syntax flowconfig) ~default:Options.CastingSyntax.Colon;
+      Base.Option.value (FlowConfig.casting_syntax flowconfig) ~default:Options.CastingSyntax.Both;
     opt_wait_for_recheck;
     opt_traces = Base.Option.value options_flags.traces ~default:(FlowConfig.traces flowconfig);
     opt_quiet = options_flags.Options_flags.quiet;
@@ -1355,6 +1361,7 @@ let make_options
     opt_module = FlowConfig.module_system flowconfig;
     opt_munge_underscores =
       options_flags.munge_underscore_members || FlowConfig.munge_underscores flowconfig;
+    opt_namespaces = FlowConfig.namespaces flowconfig;
     opt_node_main_fields = FlowConfig.node_main_fields flowconfig;
     opt_temp_dir;
     opt_max_workers =
@@ -1363,19 +1370,19 @@ let make_options
       |> min Sys_utils.nbr_procs;
     opt_suppress_types = FlowConfig.suppress_types flowconfig;
     opt_max_literal_length = FlowConfig.max_literal_length flowconfig;
-    opt_direct_dependent_files_fix;
+    opt_as_const = Base.Option.value ~default:false (FlowConfig.enable_as_const flowconfig);
     opt_component_syntax = FlowConfig.component_syntax flowconfig;
-    opt_component_syntax_includes =
+    opt_react_rules = FlowConfig.react_rules flowconfig;
+    opt_hooklike_functions = FlowConfig.hooklike_functions flowconfig;
+    opt_hooklike_functions_includes =
       Base.List.map
         ~f:(Files.expand_project_root_token ~root)
-        (FlowConfig.component_syntax_includes flowconfig);
-    opt_react_rules = FlowConfig.react_rules flowconfig;
+        (FlowConfig.hooklike_functions_includes flowconfig);
     opt_enable_const_params =
       Base.Option.value (FlowConfig.enable_const_params flowconfig) ~default:false;
     opt_enable_relay_integration = FlowConfig.relay_integration flowconfig;
     opt_enabled_rollouts = FlowConfig.enabled_rollouts flowconfig;
     opt_channel_mode = Base.Option.value ~default:`pipe (FlowConfig.channel_mode flowconfig);
-    opt_enforce_strict_call_arity = FlowConfig.enforce_strict_call_arity flowconfig;
     opt_enums = FlowConfig.enums flowconfig;
     opt_estimate_recheck_time =
       Base.Option.first_some
@@ -1405,8 +1412,6 @@ let make_options
         ~f:(Files.expand_project_root_token ~root)
         (FlowConfig.haste_paths_includes flowconfig);
     opt_file_options = file_options;
-    opt_libdef_in_checking = FlowConfig.libdef_in_checking flowconfig;
-    opt_batch_lsp_request_processing = FlowConfig.batch_lsp_request_processing flowconfig;
     opt_lint_severities = lint_severities;
     opt_strict_mode = strict_mode;
     opt_merge_timeout;
@@ -1426,6 +1431,7 @@ let make_options
       Base.Option.value (FlowConfig.use_mixed_in_catch_variables flowconfig) ~default:false;
     opt_react_runtime = FlowConfig.react_runtime flowconfig;
     opt_recursion_limit = FlowConfig.recursion_limit flowconfig;
+    opt_relay_integration_esmodules = FlowConfig.relay_integration_esmodules flowconfig;
     opt_relay_integration_excludes =
       Base.List.map
         ~f:(fun pattern -> pattern |> Files.expand_project_root_token ~root |> Str.regexp)
@@ -1435,11 +1441,6 @@ let make_options
       Base.List.map
         ~f:(fun pattern -> pattern |> Files.expand_project_root_token ~root |> Str.regexp)
         (FlowConfig.relay_integration_module_prefix_includes flowconfig);
-    opt_renders_type_validation = FlowConfig.renders_type_validation flowconfig;
-    opt_renders_type_validation_includes =
-      Base.List.map
-        ~f:(Files.expand_project_root_token ~root)
-        (FlowConfig.renders_type_validation_includes flowconfig);
     opt_max_files_checked_per_worker = FlowConfig.max_files_checked_per_worker flowconfig;
     opt_max_seconds_for_check_per_worker = FlowConfig.max_seconds_for_check_per_worker flowconfig;
     opt_slow_to_check_logging = options_flags.slow_to_check_logging;
@@ -1448,10 +1449,13 @@ let make_options
       Base.List.map
         ~f:(Files.expand_project_root_token ~root)
         (FlowConfig.strict_es6_import_export_excludes flowconfig);
+    opt_ts_syntax = FlowConfig.ts_syntax flowconfig;
     opt_automatic_require_default =
       Base.Option.value (FlowConfig.automatic_require_default flowconfig) ~default:false;
     opt_format;
     opt_autoimports = Base.Option.value (FlowConfig.autoimports flowconfig) ~default:true;
+    opt_autoimports_min_characters =
+      Base.Option.value (FlowConfig.autoimports_min_characters flowconfig) ~default:0;
     opt_autoimports_ranked_by_usage =
       Base.Option.value (FlowConfig.autoimports_ranked_by_usage flowconfig) ~default:false;
     opt_autoimports_ranked_by_usage_boost_exact_match_min_length =
@@ -1478,12 +1482,12 @@ let make_options
       Option.value
         options_flags.long_lived_workers
         ~default:(FlowConfig.long_lived_workers flowconfig);
-    opt_precise_dependents =
-      Option.value
-        options_flags.precise_dependents
-        ~default:(FlowConfig.precise_dependents flowconfig);
     (* Not user-configurable for now, but set to false for some codemods. *)
     opt_any_propagation = true;
+    opt_blocking_worker_communication =
+      Option.value
+        options_flags.blocking_worker_communication
+        ~default:(FlowConfig.blocking_worker_communication flowconfig);
   }
 
 let make_env flowconfig flowconfig_name connect_flags root =

@@ -110,6 +110,8 @@ module type S = sig
     type t
 
     val empty : t
+
+    val found_computed_type : t -> bool
   end
 
   val run_type :
@@ -167,12 +169,11 @@ module type INPUT = sig
     cont:(Type.t -> 'a) ->
     type_:(Type.t -> 'a) ->
     app:('a -> 'a list -> 'a) ->
+    from_value:bool ->
     Reason.t ->
     Type.t ->
     Type.t list ->
     'a
-
-  val builtin : Context.t -> cont:(Type.t -> 'a) -> Reason.t -> string -> 'a
 
   val builtin_type : Context.t -> cont:(Type.t -> 'a) -> Reason.t -> string -> 'a
 
@@ -196,9 +197,17 @@ module Make (I : INPUT) : S = struct
     type t = {
       rec_tvar_ids: ISet.t;
       rec_eval_ids: Type.EvalIdSet.t;
+      found_computed_type: bool;
     }
 
-    let empty = { rec_tvar_ids = ISet.empty; rec_eval_ids = Type.EvalIdSet.empty }
+    let empty =
+      {
+        rec_tvar_ids = ISet.empty;
+        rec_eval_ids = Type.EvalIdSet.empty;
+        found_computed_type = false;
+      }
+
+    let found_computed_type { found_computed_type = x; _ } = x
   end
 
   include StateResult.Make (State)
@@ -258,31 +267,10 @@ module Make (I : INPUT) : S = struct
     | TVarKey id -> ISet.mem id state.State.rec_tvar_ids
     | EvalKey id -> Type.EvalIdSet.mem id state.State.rec_eval_ids
 
-  (* Lookup a type parameter T in the current environment. There are three outcomes:
-     1. T appears in env and for its first occurence locations match. This means it
-        is not shadowed by another parameter with the same name. In this case
-        return the type parameter.
-     2. T appears in env but is not the first occurence. This means that some other
-        type parameter shadows it. We split cases depending on the value of
-        Config.opt_flag_shadowed_type_params:
-        - true: flag a warning, since the type is not well-formed in this context.
-        - false: return the type normally ignoring the warning.
-     3. The type parameter is not in env. Do the default action.
-  *)
   let lookup_tparam ~default env t tp_name tp_loc =
     let pred { T.name; reason; _ } = name = tp_name && tp_loc = Reason.def_loc_of_reason reason in
     match List.find_opt pred env.Env.tparams_rev with
-    | Some _ ->
-      (* If we care about shadowing of type params, then flag an error *)
-      if Env.flag_shadowed_type_params env then
-        let shadow_pred { T.name; _ } = name = tp_name in
-        match List.find_opt shadow_pred env.Env.tparams_rev with
-        | Some { T.reason; _ } when Reason.def_loc_of_reason reason <> tp_loc ->
-          terr ~kind:ShadowTypeParam (Some t)
-        | Some _ -> return (Ty.Bound (tp_loc, Subst_name.string_of_subst_name tp_name))
-        | None -> assert false
-      else
-        return (Ty.Bound (tp_loc, Subst_name.string_of_subst_name tp_name))
+    | Some _ -> return (Ty.Bound (tp_loc, Subst_name.string_of_subst_name tp_name))
     | None -> default t
 
   (**************)
@@ -321,7 +309,8 @@ module Make (I : INPUT) : S = struct
 
   let non_opt_param = Ty.{ prm_optional = false }
 
-  let mk_fun ?(params = []) ?rest ?tparams ?(static = Ty.(TypeOf (FunProto, None))) ret =
+  let mk_fun
+      ?(params = []) ?(hook = false) ?rest ?tparams ?(static = Ty.(TypeOf (FunProto, None))) ret =
     Ty.(
       Fun
         {
@@ -330,6 +319,7 @@ module Make (I : INPUT) : S = struct
           fun_return = ret;
           fun_type_params = tparams;
           fun_static = static;
+          fun_hook = hook;
         }
     )
 
@@ -427,6 +417,7 @@ module Make (I : INPUT) : S = struct
           true
         | ReadOnlyType
         | ReactDRO _
+        | MakeHooklike
         | PartialType
         | RequiredType
         | SpreadType _
@@ -446,6 +437,7 @@ module Make (I : INPUT) : S = struct
     | Env.EvaluateAll ->
       (match d with
       | T.ReactDRO _
+      | T.MakeHooklike
       | T.ReactPromoteRendersRepresentation _ ->
         false
       | _ -> true)
@@ -458,6 +450,7 @@ module Make (I : INPUT) : S = struct
   let eval_t ~env ~(cont : fn_t) ~(default : fn_t) ~non_eval ?(force_eval = false) x =
     let (_, T.TypeDestructorT (_, _, d), id) = x in
     let cx = Env.get_cx env in
+    let%bind () = modify (fun state -> { state with State.found_computed_type = true }) in
     let should_eval = should_evaluate_destructor ~env ~force_eval d in
     I.eval
       cx
@@ -536,13 +529,14 @@ module Make (I : INPUT) : S = struct
     let%map t = cont ~env ?id t in
     Ty.mk_union ~from_bounds:false (Ty.Void, [t])
 
-  let keys_t ~env ~(cont : fn_t) r t =
+  let keys_t ~env ~(cont : fn_t) ?(force_eval = false) r t =
     let cx = Env.get_cx env in
     let default () =
       let%map ty = cont ~env t in
       Ty.Utility (Ty.Keys ty)
     in
-    let should_evaluate = Env.evaluate_type_destructors env <> Env.EvaluateNone in
+    let%bind () = modify (fun state -> { state with State.found_computed_type = true }) in
+    let should_evaluate = force_eval || Env.evaluate_type_destructors env <> Env.EvaluateNone in
     I.keys cx ~should_evaluate ~cont:(cont ~env) ~default r t
 
   module Reason_utils = struct
@@ -595,6 +589,9 @@ module Make (I : INPUT) : S = struct
       | RIdentifier name ->
         (* class or interface declaration *)
         let symbol = symbol_from_reason env reason name in
+        return symbol
+      | RThisType ->
+        let symbol = symbol_from_reason env reason (OrdinaryName "this") in
         return symbol
       | desc ->
         let desc = Reason.show_virtual_reason_desc (fun _ _ -> ()) desc in
@@ -757,6 +754,7 @@ module Make (I : INPUT) : S = struct
       | CustomFunT (_, f) -> custom_fun ~env f
       | InternalT i -> internal_t t i
       | MatchingPropT _ -> return (mk_empty Ty.EmptyMatchingPropT)
+      | NamespaceT { values_type; types_tmap = _ } -> cont ~env ?id values_type
       | DefT (_, MixedT _) -> return Ty.Top
       | AnyT (reason, kind) -> return (Ty.Any (any_t reason kind))
       | DefT (_, VoidT) -> return Ty.Void
@@ -792,7 +790,7 @@ module Make (I : INPUT) : S = struct
       | UnionT (_, rep) -> app_union ~from_bounds:false ~f:(type__ ~env ?id) rep
       | IntersectionT (_, rep) -> app_intersection ~f:(type__ ~env ?id) rep
       | DefT (_, PolyT { tparams = ps; t_out = t; _ }) -> poly_ty ~env t ps
-      | TypeAppT { reason; use_op = _; type_; targs; use_desc = _ } ->
+      | TypeAppT { reason; use_op = _; type_; targs; from_value; use_desc = _ } ->
         (match (desc_of_reason reason, targs) with
         | ( RTypeApp (RReactElement { name_opt = Some name; from_component_syntax = true }),
             component :: _
@@ -801,8 +799,11 @@ module Make (I : INPUT) : S = struct
             (Ty.Generic
                (symbol_from_reason env (TypeUtil.reason_of_t component) name, Ty.TypeAliasKind, None)
             )
-        | _ -> type_app ~env type_ (Some targs))
-      | DefT (r, InstanceT { super; inst; _ }) -> instance_t ~env r super inst
+        | _ -> type_app ~env ~from_value type_ (Some targs))
+      | ThisInstanceT (r, { super; inst; _ }, _, _)
+      | DefT (r, InstanceT { super; inst; _ }) ->
+        instance_t ~env r super inst
+      | DefT (_, ClassT (ThisInstanceT (r, t, _, _))) -> this_class_t ~env r t
       | DefT (_, ClassT t) -> class_t ~env t
       | DefT (_, ReactAbstractComponentT { config; instance; renders; component_kind = _ }) ->
         let%bind config = type__ ~env config in
@@ -830,8 +831,7 @@ module Make (I : INPUT) : S = struct
           | T.RendersStar -> Ty.RendersStar
         in
         return (Ty.Renders (ty, variant))
-      | ThisClassT (_, t, _, _) -> this_class_t ~env t
-      | ThisTypeAppT (_, c, _, ts) -> type_app ~env c ts
+      | ThisTypeAppT (_, c, _, ts) -> type_app ~env ~from_value:false c ts
       | KeysT (r, t) -> keys_t ~env ~cont:type__ r t
       | OpaqueT (r, o) -> opaque_t ~env r o
       | ObjProtoT _ -> return Ty.(TypeOf (ObjProto, None))
@@ -930,7 +930,14 @@ module Make (I : INPUT) : S = struct
 
     and fun_ty ~env static f fun_type_params =
       let%bind fun_static = type__ ~env static in
-      let { T.params; rest_param; return_t; predicate; _ } = f in
+      let { T.params; rest_param; return_t; predicate; hook; _ } = f in
+      let fun_hook =
+        match hook with
+        | T.HookAnnot
+        | T.HookDecl _ ->
+          true
+        | _ -> false
+      in
       let%bind fun_params = mapM (fun_param ~env) params in
       let%bind fun_rest_param = fun_rest_param_t ~env rest_param in
       let%bind fun_return =
@@ -943,7 +950,7 @@ module Make (I : INPUT) : S = struct
           let%map t = type__ ~env return_t in
           Ty.ReturnType t
       in
-      return { Ty.fun_params; fun_rest_param; fun_return; fun_type_params; fun_static }
+      return { Ty.fun_params; fun_rest_param; fun_return; fun_type_params; fun_static; fun_hook }
 
     and method_ty ~env t =
       let rec go = function
@@ -989,22 +996,6 @@ module Make (I : INPUT) : S = struct
       { Ty.obj_def_loc; obj_kind; obj_frozen; obj_literal; obj_props }
 
     and obj_prop_t =
-      (* Value-level object types should not have properties of type type alias. For
-         convience reasons it is possible for a non-module-like Type.ObjT to include
-         such types as properties. Here we explicitly filter them out, since we
-         cannot use type__ to normalize them.
-      *)
-      let is_type_alias = function
-        | T.DefT (_, T.TypeT _)
-        | T.DefT (_, T.PolyT { t_out = T.DefT (_, T.TypeT _); _ }) ->
-          true
-        | _ -> false
-      in
-      let keep_field ~env t =
-        match Lookahead.peek (Env.get_cx env) t with
-        | Lookahead.LowerBounds [t] -> not (is_type_alias t)
-        | _ -> true
-      in
       let def_locs ~fallback_t p =
         match T.Property.def_locs p with
         | None -> [TypeUtil.loc_of_t fallback_t]
@@ -1013,16 +1004,13 @@ module Make (I : INPUT) : S = struct
       fun ~env ?(inherited = false) ?(source = Ty.Other) (x, p) ->
         match p with
         | T.Field { preferred_def_locs = _; key_loc = _; type_; polarity } ->
-          if keep_field ~env type_ then
-            let polarity = type_polarity polarity in
-            let%map (t, optional) = opt_t ~env type_ in
-            let prop = Ty.Field { t; polarity; optional } in
-            [
-              Ty.NamedProp
-                { name = x; prop; inherited; source; def_locs = def_locs ~fallback_t:type_ p };
-            ]
-          else
-            return []
+          let polarity = type_polarity polarity in
+          let%map (t, optional) = opt_t ~env type_ in
+          let prop = Ty.Field { t; polarity; optional } in
+          [
+            Ty.NamedProp
+              { name = x; prop; inherited; source; def_locs = def_locs ~fallback_t:type_ p };
+          ]
         | T.Method { key_loc = _; type_ = t } ->
           let%map tys = method_ty ~env t in
           Base.List.map
@@ -1238,7 +1226,7 @@ module Make (I : INPUT) : S = struct
     (* The Class<T> utility type *)
     and class_t ~env t =
       match t with
-      | T.DefT (r, T.InstanceT { static; inst; _ })
+      | T.DefT (r, T.InstanceT { T.static; inst; _ })
         when desc_of_reason ~unwrap:false r = RReactComponent ->
         let { Type.own_props; _ } = inst in
         react_component_class ~env static own_props
@@ -1246,13 +1234,14 @@ module Make (I : INPUT) : S = struct
         let%map ty = type__ ~env t in
         Ty.Utility (Ty.Class ty)
 
-    and this_class_t ~env t =
+    and this_class_t ~env r t =
       let open Type in
       match t with
-      | DefT (r, InstanceT { inst = { inst_kind = ClassKind; _ }; _ }) ->
+      | { inst = { inst_kind = ClassKind; _ }; _ } ->
         let%map symbol = Reason_utils.instance_symbol env r in
         Ty.TypeOf (Ty.TSymbol symbol, None)
-      | _ -> terr ~kind:BadThisClassT ~msg:(string_of_ctor t) (Some t)
+      | { inst = { inst_kind = InterfaceKind _; _ }; _ } ->
+        terr ~kind:BadThisClassT ~msg:"InterfaceKind" (Some (DefT (r, InstanceT t)))
 
     and type_params_t ~env tparams =
       let (env, results) =
@@ -1274,7 +1263,7 @@ module Make (I : INPUT) : S = struct
     and poly_ty ~env t typeparams =
       let open Type in
       match t with
-      | ThisClassT (_, t, _, _) -> this_class_t ~env t
+      | DefT (_, ClassT (ThisInstanceT (r, t, _, _))) -> this_class_t ~env r t
       | DefT (_, FunT (static, f)) ->
         let%bind (env, ps) = type_params_t ~env typeparams in
         let%map fun_t = fun_ty ~env static f ps in
@@ -1330,8 +1319,19 @@ module Make (I : INPUT) : S = struct
       let singleton_poly ~env targs tparams t =
         let open Type in
         match t with
-        | ThisClassT (_, DefT (r, InstanceT { inst; _ }), _, _)
+        | DefT
+            ( r,
+              TypeT
+                ( _,
+                  DefT
+                    ( _,
+                      InstanceT
+                        { inst = { inst_kind = InterfaceKind { inline = true }; _ } as inst; _ }
+                    )
+                )
+            )
         | DefT (_, TypeT (_, DefT (r, InstanceT { inst; _ })))
+        | DefT (_, ClassT (ThisInstanceT (r, { inst; _ }, _, _)))
         | DefT (_, ClassT (DefT (r, InstanceT { inst; _ }))) ->
           instance_app ~env r inst tparams targs
         | DefT (r, TypeT (kind, t)) ->
@@ -1350,13 +1350,17 @@ module Make (I : INPUT) : S = struct
             ) ->
           let symbol = Reason_utils.component_symbol env name r in
           mk_generic ~env symbol Ty.ComponentKind tparams targs
-        | DefT (_, ClassT (TypeAppT { reason = _; use_op = _; type_; targs = _; use_desc = _ })) ->
-          type_app ~env type_ targs
+        | DefT
+            ( _,
+              ClassT
+                (TypeAppT { reason = _; use_op = _; type_; targs = _; from_value; use_desc = _ })
+            ) ->
+          type_app ~env ~from_value type_ targs
         | _ ->
           let msg = "PolyT:" ^ Type.string_of_ctor t in
           terr ~kind:BadTypeApp ~msg None
       in
-      let rec singleton ~env targs t =
+      let rec singleton ~env ~from_value targs t =
         let open Type in
         match t with
         | AnyT _ -> type__ ~env t
@@ -1369,12 +1373,27 @@ module Make (I : INPUT) : S = struct
               ~cont:(type__ ~env)
               ~type_:(type__ ~env)
               ~app:app_on_generic
+              ~from_value:false
               reason
               t
               targs
           | None -> type__ ~env inner_t)
+        (* e.g. typeof functionDef<targ1, targ2> *)
+        | DefT (reason, PolyT _) when from_value && Option.is_some targs ->
+          I.typeapp
+            (Env.get_cx env)
+            ~cont:(type__ ~env)
+            ~type_:(type__ ~env)
+            ~app:app_on_generic
+            ~from_value
+            reason
+            t
+            (Option.get targs)
         | DefT (_, PolyT { tparams; t_out; _ }) -> singleton_poly ~env targs tparams t_out
-        | ThisClassT (_, t, _, _)
+        | DefT (_, ClassT (ThisInstanceT (r, t, _, _))) ->
+          (* This is likely an error - cannot apply on non-polymorphic type.
+           * E.g type Foo = any; var x: Foo<number> *)
+          type__ ~env (DefT (r, InstanceT t))
         | DefT (_, TypeT (_, t)) ->
           (* This is likely an error - cannot apply on non-polymorphic type.
            * E.g type Foo = any; var x: Foo<number> *)
@@ -1385,7 +1404,7 @@ module Make (I : INPUT) : S = struct
           Ty.Utility (Ty.Class t)
         | UnionT (_, union_rep) ->
           (* This case targeting UnionTs created during tvar_resolution. *)
-          let%map tys = mapM (singleton ~env targs) (union_rep |> T.UnionRep.members) in
+          let%map tys = mapM (singleton ~env ~from_value targs) (union_rep |> T.UnionRep.members) in
           (match tys with
           | [] -> Ty.Bot (Ty.NoLowerWithUpper Ty.NoUpper)
           | t :: ts -> Ty.mk_union ~from_bounds:true (t, ts))
@@ -1400,7 +1419,7 @@ module Make (I : INPUT) : S = struct
           let msg = Type.string_of_ctor t in
           terr ~kind:BadTypeApp ~msg None
       in
-      fun ~env t targs ->
+      fun ~env ~from_value t targs ->
         match Lookahead.peek (Env.get_cx env) t with
         | Lookahead.Recursive -> terr ~kind:BadTypeApp ~msg:"recursive" (Some t)
         | Lookahead.LowerBounds [] ->
@@ -1408,7 +1427,7 @@ module Make (I : INPUT) : S = struct
           return (Ty.Bot (Ty.NoLowerWithUpper Ty.NoUpper))
         | Lookahead.LowerBounds ts ->
           (* TypeAppT distributes over multiple lower bounds. *)
-          let%map tys = mapM (singleton ~env targs) ts in
+          let%map tys = mapM (singleton ~env ~from_value targs) ts in
           (match tys with
           | [] -> Ty.Bot (Ty.NoLowerWithUpper Ty.NoUpper)
           | t :: ts -> Ty.mk_union ~from_bounds:true (t, ts))
@@ -1421,13 +1440,18 @@ module Make (I : INPUT) : S = struct
       | _ ->
         let name = opaque_type.Type.opaque_name in
         let opaque_symbol = symbol_from_reason env opaque_reason (Reason.OrdinaryName name) in
-        let%bind targs = optMapM (type__ ~env) targs in
-        return (generic_talias opaque_symbol targs)
+        let%map targs = optMapM (type__ ~env) targs in
+        generic_talias opaque_symbol targs
 
     and opaque_t ~env reason opaque_type =
-      let name = opaque_type.Type.opaque_name in
-      let opaque_symbol = symbol_from_reason env reason (Reason.OrdinaryName name) in
-      return (generic_talias opaque_symbol None)
+      let { Type.opaque_type_args = targs; opaque_name; _ } = opaque_type in
+      let opaque_symbol = symbol_from_reason env reason (Reason.OrdinaryName opaque_name) in
+      let%map targs =
+        match targs with
+        | [] -> return None
+        | _ -> optMapM (fun (_, _, t, _) -> type__ ~env t) (Some targs)
+      in
+      generic_talias opaque_symbol targs
 
     and custom_fun_expanded ~env =
       Type.(
@@ -1547,7 +1571,8 @@ module Make (I : INPUT) : S = struct
       Type.(
         function
         | ChoiceKitT _
-        | ExtendsT _ ->
+        | ExtendsT _
+        | EnforceUnionOptimized _ ->
           terr ~kind:BadInternalT (Some t)
       )
 
@@ -1784,7 +1809,9 @@ module Make (I : INPUT) : S = struct
       in
       let%bind ty = type__ ~env t in
       match d with
-      | T.ReactDRO _ -> return ty
+      | T.MakeHooklike
+      | T.ReactDRO _ ->
+        return ty
       | T.NonMaybeType -> return (Ty.Utility (Ty.NonMaybeType ty))
       | T.ReadOnlyType -> return (Ty.Utility (Ty.ReadOnly ty))
       | T.PartialType -> return (Ty.Utility (Ty.Partial ty))
@@ -1953,15 +1980,11 @@ module Make (I : INPUT) : S = struct
           Ty.Decl o'
         | _ -> terr ~kind:BadTypeAlias ~msg:"opaque" (Some t)
       in
-      let type_param env r t =
+      let type_param r t =
         match desc_of_reason r with
         | RType name ->
           let loc = Reason.def_loc_of_reason r in
-          let default t = TypeConverter.convert_t ~env t in
-          let%map p =
-            lookup_tparam ~default env t (Subst_name.Name (display_string_of_name name)) loc
-          in
-          Ty.Type p
+          return (Ty.Type (Ty.Bound (loc, display_string_of_name name)))
         | desc -> terr ~kind:BadTypeAlias ~msg:(spf "type param: %s" (string_of_desc desc)) (Some t)
       in
       let class_ env t =
@@ -1976,7 +1999,7 @@ module Make (I : INPUT) : S = struct
         | ImportEnumKind -> terr ~kind:(UnexpectedTypeCtor "EnumObjectT") None
         | ImportTypeofKind -> import env r t ps
         | OpaqueKind -> opaque env t ps
-        | TypeParamKind -> type_param env r t
+        | TypeParamKind -> type_param r t
         (* The following cases are not common *)
         | InstanceKind -> terr ~kind:BadTypeAlias ~msg:"instance" (Some t)
         | RenderTypeKind -> terr ~kind:BadTypeAlias ~msg:"render type" (Some t)
@@ -2059,7 +2082,7 @@ module Make (I : INPUT) : S = struct
         | DefT (_, TypeT (ImportClassKind, DefT (r, InstanceT { static; super; inst; _ }))) ->
           class_or_interface_decl ~env r (Some tparams) static super inst
         (* Classes *)
-        | ThisClassT (_, DefT (r, InstanceT { static; super; inst; _ }), _, _)
+        | DefT (_, ClassT (ThisInstanceT (r, { static; super; inst; _ }, _, _)))
         (* Interfaces *)
         | DefT (_, ClassT (DefT (r, InstanceT { static; super; inst; _ }))) ->
           class_or_interface_decl ~env r (Some tparams) static super inst
@@ -2067,7 +2090,11 @@ module Make (I : INPUT) : S = struct
            The initial abstraction is wrapper within an abstraction and a type application.
            The current case unwraps the abstraction and application to reveal the
            initial imported type. *)
-        | DefT (_, ClassT (TypeAppT { reason = _; use_op = _; type_; targs = _; use_desc = _ })) ->
+        | DefT
+            ( _,
+              ClassT
+                (TypeAppT { reason = _; use_op = _; type_; targs = _; from_value = _; use_desc = _ })
+            ) ->
           toplevel ~env type_
         | DefT (reason, ReactAbstractComponentT { component_kind = Nominal (_, name); _ }) ->
           component_decl ~env (Some tparams) name reason
@@ -2093,11 +2120,12 @@ module Make (I : INPUT) : S = struct
             } ->
           let%map m = module_t ~env reason exports in
           Ty.Decl m
-        | DefT (r, ObjT o) when Reason_utils.is_module_reason r ->
-          let%map (name, exports, default) = module_of_object ~env r o in
+        | NamespaceT { values_type = DefT (r, ObjT o); types_tmap }
+          when Reason_utils.is_module_reason r ->
+          let%map (name, exports, default) = module_of_namespace ~env r o types_tmap in
           Ty.Decl (Ty.ModuleDecl { name; exports; default })
         (* Monomorphic Classes/Interfaces *)
-        | ThisClassT (_, DefT (r, InstanceT { static; super; inst; _ }), _, _)
+        | DefT (_, ClassT (ThisInstanceT (r, { static; super; inst; _ }, _, _)))
         | DefT (_, ClassT (DefT (r, InstanceT { static; super; inst; _ })))
         | DefT (_, TypeT (InstanceKind, DefT (r, InstanceT { static; super; inst; _ })))
         | DefT (_, TypeT (ImportClassKind, DefT (r, InstanceT { static; super; inst; _ }))) ->
@@ -2152,15 +2180,21 @@ module Make (I : INPUT) : S = struct
             Some t)
       in
       let from_exports_tmap ~env exports_tmap =
-        let step (x, { name_loc = _; preferred_def_locs = _; is_type_only_export = _; type_ = t }) =
+        let step (x, { name_loc = _; preferred_def_locs = _; type_ = t }) =
           match%map toplevel ~env t with
           | Ty.Decl d -> d
           | Ty.Type t -> Ty.VariableDecl (x, t)
         in
-        Context.find_exports (Env.get_cx env) exports_tmap |> NameUtils.Map.bindings |> mapM step
+        exports_tmap |> NameUtils.Map.bindings |> mapM step
       in
-      fun ~env reason { exports_tmap; cjs_export; _ } ->
+      fun ~env reason { value_exports_tmap; type_exports_tmap; cjs_export; _ } ->
         let%bind name = Reason_utils.module_symbol_opt env reason in
+        let exports_tmap =
+          let cx = Env.get_cx env in
+          NameUtils.Map.union
+            (Context.find_exports cx value_exports_tmap)
+            (Context.find_exports cx type_exports_tmap)
+        in
         let%bind exports = from_exports_tmap ~env exports_tmap in
         let%map default = from_cjs_export ~env cjs_export in
         Ty.ModuleDecl { name; exports; default }
@@ -2189,6 +2223,30 @@ module Make (I : INPUT) : S = struct
       fun ~env reason o ->
         let%bind name = Reason_utils.module_symbol_opt env reason in
         let%map (exports, default) = obj_module_props ~env o.T.props_tmap in
+        (name, exports, default)
+
+    and module_of_namespace =
+      let step ~env decls (x, t, _pol) =
+        match%map toplevel ~env t with
+        | Ty.Type t -> Ty.VariableDecl (x, t) :: decls
+        | Ty.Decl d -> d :: decls
+      in
+      let rec loop ~env acc xs =
+        match xs with
+        | [] -> return acc
+        | (x, T.Field { type_; polarity; _ }) :: tl ->
+          let%bind acc' = step ~env acc (x, type_, polarity) in
+          loop ~env acc' tl
+        | _ -> terr ~kind:UnsupportedTypeCtor ~msg:"namespace-prop" None
+      in
+      fun ~env reason values_type types_tmap ->
+        let%bind (name, exports, default) = module_of_object ~env reason values_type in
+        let%map exports =
+          types_tmap
+          |> Context.find_props (Env.get_cx env)
+          |> NameUtils.Map.bindings
+          |> loop ~env exports
+        in
         (name, exports, default)
 
     let convert_toplevel = toplevel
@@ -2279,8 +2337,9 @@ module Make (I : INPUT) : S = struct
       result
 
   let run_imports ~options ~genv =
-    let { Env.file_sig; typed_ast; cx; _ } = genv in
-    Ty_normalizer_imports.extract_schemes cx file_sig typed_ast |> normalize_imports ~options ~genv
+    let { Env.file_sig; typed_ast_opt; cx; _ } = genv in
+    Ty_normalizer_imports.extract_schemes cx file_sig typed_ast_opt
+    |> normalize_imports ~options ~genv
 
   module type EXPAND_MEMBERS_CONVERTER = sig
     val force_instance : bool
@@ -2334,7 +2393,14 @@ module Make (I : INPUT) : S = struct
       let cont =
         type__ ~env ~inherited ~source:(Ty.PrimitiveProto builtin) ~imode:IMInstance ?id:None
       in
-      I.builtin (Env.get_cx env) ~cont r builtin
+      let t =
+        match a with
+        | T.ArrayAT _ -> Flow_js_utils.lookup_builtin_value (Env.get_cx env) "Array" r
+        | T.ROArrayAT _
+        | T.TupleAT _ ->
+          Flow_js_utils.lookup_builtin_type (Env.get_cx env) "$ReadOnlyArray" r
+      in
+      cont t
 
     and member_expand_object ~env ~inherited ~source super implements inst =
       let { T.own_props; proto_props; _ } = inst in
@@ -2467,12 +2533,14 @@ module Make (I : INPUT) : S = struct
       | DefT (r, ObjT o) ->
         let%map o = obj_t ~env ~inherited ~source ~imode r o in
         Ty.Obj o
+      | DefT (_, ClassT (ThisInstanceT (r, t, _, _))) ->
+        this_class_t ~env ~inherited ~source ~imode (DefT (r, InstanceT t))
       | DefT (_, ClassT t) -> type__ ~env ~inherited ~source ~imode t
       | DefT (r, ArrT a) -> arr_t ~env ~inherited r a
       | DefT (r, EnumObjectT e) -> enum_t ~env ~inherited r e
+      | ThisInstanceT (r, { static; super; implements; inst }, _, _)
       | DefT (r, InstanceT { static; super; implements; inst }) ->
         instance_t ~env ~inherited ~source ~imode r static super implements inst
-      | ThisClassT (_, t, _, _) -> this_class_t ~env ~inherited ~source ~imode t
       | DefT (_, PolyT { tparams; t_out; _ }) ->
         let tparams_rev = List.rev (Nel.to_list tparams) @ env.Env.tparams_rev in
         let env = Env.{ env with tparams_rev } in
@@ -2483,10 +2551,10 @@ module Make (I : INPUT) : S = struct
       | UnionT (_, rep) ->
         app_union ~from_bounds:false ~f:(type__ ~env ?id ~inherited ~source ~imode) rep
       | DefT (_, FunT (static, _)) -> type__ ~env ~inherited ~source ~imode static
-      | TypeAppT { reason; use_op = _; type_ = c; targs; use_desc = _ } ->
+      | TypeAppT { reason; use_op = _; type_ = c; targs; from_value; use_desc = _ } ->
         let cont = type__ ~env ~inherited ~source ~imode in
         let type_ = convert_t ~env in
-        I.typeapp (Env.get_cx env) ~cont ~type_ ~app:app_on_generic reason c targs
+        I.typeapp (Env.get_cx env) ~cont ~type_ ~app:app_on_generic ~from_value reason c targs
       | DefT (_, TypeT (_, t)) -> type__ ~env ~inherited ~source ~imode t
       | OptionalT { type_ = t; _ } -> optional_t ~env ?id ~cont:(type__ ~inherited ~source ~imode) t
       | EvalT (t, d, id') ->
@@ -2554,12 +2622,13 @@ module Make (I : INPUT) : S = struct
       | AnnotT (_, t, _) -> type__ ~env ?id t
       | UnionT (_, rep) -> app_union ~from_bounds:false ~f:(type__ ~env ?id) rep
       | IntersectionT (_, rep) -> app_intersection ~f:(type__ ~env ?id) rep
-      | TypeAppT { reason; use_op = _; type_ = t; targs; use_desc = _ } ->
+      | TypeAppT { reason; use_op = _; type_ = t; targs; from_value; use_desc = _ } ->
         I.typeapp
           (Env.get_cx env)
           ~cont:(type__ ~env)
           ~type_:(type__ ~env)
           ~app:app_on_generic
+          ~from_value
           reason
           t
           targs
@@ -2585,7 +2654,7 @@ module Make (I : INPUT) : S = struct
               (t, d, id')
       | MaybeT (_, t) -> maybe_t ~env ?id ~cont:type__ t
       | OptionalT { type_ = t; _ } -> optional_t ~env ?id ~cont:type__ t
-      | KeysT (r, t) -> keys_t ~env ~cont:type__ r t
+      | KeysT (r, t) -> keys_t ~env ~cont:type__ r ~force_eval:true t
       | DefT (_, SingletonNumT (_, lit)) -> return (Ty.NumLit lit)
       | DefT (_, SingletonStrT lit) -> return (Ty.StrLit lit)
       | DefT (_, SingletonBoolT lit) -> return (Ty.BoolLit lit)

@@ -146,7 +146,11 @@ let resolve_requires ~transaction ~reader ~options ~profiling ~workers ~parsed ~
     Module_js.add_parsed_resolved_requires ~mutator ~reader ~options ~node_modules_containers
   in
   with_memory_timer_lwt ~options "ResolveRequires" profiling (fun () ->
-      MultiWorkerLwt.iter workers ~job ~next:(MultiWorkerLwt.next workers parsed)
+      MultiWorkerLwt.iter
+        workers
+        ~blocking:(Options.blocking_worker_communication options)
+        ~job
+        ~next:(MultiWorkerLwt.next workers parsed)
   )
 
 let error_set_of_internal_error file (loc, internal_error) =
@@ -561,7 +565,15 @@ end = struct
           in
           mk_job ~mk_check ~options ()
         in
-        let%lwt ret = MultiWorkerLwt.call workers ~job ~neutral:[] ~merge ~next in
+        let%lwt ret =
+          MultiWorkerLwt.call
+            workers
+            ~blocking:(Options.blocking_worker_communication options)
+            ~job
+            ~neutral:[]
+            ~merge
+            ~next
+        in
         let { ServerEnv.merge_errors; warnings; _ } = errors in
         let ( ( merge_errors,
                 warnings,
@@ -623,9 +635,7 @@ let ensure_parsed_or_trigger_recheck ~options ~profiling ~workers ~reader files 
   try%lwt ensure_parsed ~options ~profiling ~workers ~reader files with
   | Unexpected_file_changes changed_files -> handle_unexpected_file_changes changed_files
 
-let init_libs
-    ~options ~profiling ~local_errors ~warnings ~suppressions ~reader ~validate_libdefs ordered_libs
-    =
+let init_libs ~options ~profiling ~local_errors ~warnings ~suppressions ~reader ordered_libs =
   with_memory_timer_lwt ~options "InitLibs" profiling (fun () ->
       let%lwt {
             Init_js.ok;
@@ -635,7 +645,7 @@ let init_libs
             exports;
             master_cx;
           } =
-        Init_js.init ~options ~reader ~validate_libdefs ordered_libs
+        Init_js.init ~options ~reader ordered_libs
       in
       Lwt.return
         ( ok,
@@ -1208,7 +1218,10 @@ end = struct
      *)
     let%lwt dirty_direct_dependents =
       with_memory_timer_lwt ~options "DirectDependentFiles" profiling (fun () ->
-          Dep_service.calc_unchanged_dependents workers changed_modules
+          Dep_service.calc_unchanged_dependents
+            ~blocking_worker_communication:(Options.blocking_worker_communication options)
+            workers
+            changed_modules
       )
     in
     Hh_logger.info "Re-resolving parsed and directly dependent files";
@@ -1229,6 +1242,7 @@ end = struct
           let%lwt partial_dependency_graph =
             Dep_service.calc_partial_dependency_graph
               ~reader
+              ~blocking_worker_communication:(Options.blocking_worker_communication options)
               workers
               files_to_update_dependency_info
               ~parsed
@@ -1252,6 +1266,7 @@ end = struct
       with_memory_timer_lwt ~options "Indexing" profiling (fun () ->
           Export_service.update
             ~workers
+            ~blocking_worker_communication:(Options.blocking_worker_communication options)
             ~reader
             ~update:new_or_changed
             ~remove:deleted
@@ -1277,117 +1292,6 @@ end = struct
       )
     in
     Lwt.return (env, intermediate_values)
-
-  (** NOTE: This code is unnecessary, and unused when in "precise dependents" mode, which will
-      become the only mode after a brief rollout period.
-
-      [direct_dependents_to_recheck ~dirty_direct_dependents ~focused ~dependencies] computes the
-      dependent files that directly depend on its inputs. a file directly depends on another if it
-      literaly has an [import].
-
-      Here's an example:
-
-      - D depends on B, B and C depend on A
-
-      ```
-            A
-           / \
-          B   C
-           \
-            D
-      ```
-
-      The dirty_direct_dependents are dependents of modules which have a different provider file, or
-      whose provider file changed between parsed and unparsed.
-
-      Suppose we're rechecking B and notice that A changed unexpectedly such that its dependents are
-      dirty (e.g., A got an initial provider).
-
-      focused = {B}
-      dependencies = {A}
-      dirty_direct_dependents = {C}
-
-      (Note that B is not a dirty dependent because it is also changed. Dirty dependents only
-      contains unchanged files.)
-
-      The dependents of the focused updates, {B}, are {D}. These are the dependents we want to
-      check. We don't want to check C right now. We want to do it when we receive the file watcher
-      update for A. How do we exclude C?
-
-      We could recompute the direct dependents of {B} using `implementation_dependency_graph` and
-      get {D}. win!
-
-      But consider this expanded graph:
-
-      ```
-         E   A
-        / \ / \
-       F   B   C
-            \
-             D
-      ```
-
-      What if `E` is deleted (and A is changed as before)?
-
-      focused = {B}
-      dependencies = {A, E}
-      dirty_direct_dependents = {C, F}
-
-      We actually have to recheck F. We won't want to -- it's not required to recheck B -- but as
-      soon as the transaction commits, all record of the E <- B and E <- F edges are gone and we
-      won't know to recheck F and B when we get the deletion event about E. Maybe we could keep
-      track of this, but not today.
-
-      implementation_dependency_graph doesn't contain E because it was deleted. Whereas before, we
-      could recompute the direct dependents of B, we can't compute the direct dependents of E.
-
-      Who knows what depended on E? dirty_direct_dependents!
-
-      But recall that we don't want to just use everything from dirty_direct_dependents, because it
-      might includes dependents of changed dependencies (C, because A changed).
-
-      The result we're looking for is {D, F}.
-
-      - direct dependents of focused updates = {D}
-      - direct dependents of dependency updates = {B, C}
-      - dirty_direct_dependents = {C, F}
-
-      It's tempting to just remove the dependents of dependencies from dirty_direct_dependents:
-      {C, F} - {B, C} = {F} -- fail!
-
-      So we need to add the focused dependents back in:
-
-      {D} + ({C, F} - {B, C}) =
-      {D} + {F} =
-      {D, F}
-  *)
-  let direct_dependents_to_recheck
-      ~implementation_dependency_graph ~dirty_direct_dependents ~focused ~dependencies =
-    (* These are all the files that literally import the files we're focusing. *)
-    let focused_direct_dependents =
-      Pure_dep_graph_operations.calc_direct_dependents implementation_dependency_graph focused
-    in
-    (* These are all the files that import changed dependencies. We don't want to check
-       dependents of dependencies. *)
-    let dependency_direct_dependents =
-      Pure_dep_graph_operations.calc_direct_dependents implementation_dependency_graph dependencies
-    in
-    (* These are files that import deleted files[1]. They need to be included now because
-       we will forget they're dirty as soon as this recheck is over and we commit the
-       updated dependency graph.
-
-       We have to compute it this way because (a) the deleted edges are already removed
-       from implementation_dependency_graph, so focused_direct_dependents doesn't include
-       them, and (b) dirty_direct_dependents doesn't track which files a dependent depended
-       on, so it doesn't tell us which files are dependents of deleted files.
-
-       [1] strictly, we should also diff out focused_direct_dependents to get the orphaned
-       dependents, but since we're about to union it with focused_direct_dependents, that's
-       a waste. *)
-    let orphaned_direct_dependents =
-      FilenameSet.diff dirty_direct_dependents dependency_direct_dependents
-    in
-    FilenameSet.union focused_direct_dependents orphaned_direct_dependents
 
   let determine_what_to_recheck
       ~profiling
@@ -1419,21 +1323,12 @@ end = struct
        dependent files is union(c,d). *)
     let%lwt all_dependent_files =
       with_memory_timer_lwt ~options "AllDependentFiles" profiling (fun () ->
-          let implementation_dependents =
-            if Options.precise_dependents options then
-              FilenameSet.union input_focused dirty_direct_dependents
-            else
-              direct_dependents_to_recheck
-                ~implementation_dependency_graph
-                ~dirty_direct_dependents
-                ~focused:input_focused
-                ~dependencies:input_dependencies
-          in
+          let roots = FilenameSet.union input_focused dirty_direct_dependents in
           let all_dependent_files =
             Pure_dep_graph_operations.calc_all_dependents
               ~sig_dependency_graph
               ~implementation_dependency_graph
-              implementation_dependents
+              roots
           in
           (* Prevent files in node_modules from being added to the checked set. *)
           let all_dependent_files = filter_out_node_modules ~options all_dependent_files in
@@ -1737,7 +1632,7 @@ let recheck_impl
     stats
   in
   (* Collate errors after transaction has completed. *)
-  let collated_errors =
+  let (collated_errors, error_resolution_stat) =
     Profiling_js.with_timer ~timer:"CollateErrors" profiling ~f:(fun () ->
         let focused_to_check = CheckedSet.focused to_check in
         let dependents_to_check = CheckedSet.dependents to_check in
@@ -1752,6 +1647,7 @@ let recheck_impl
              ~checked_files:env.ServerEnv.checked_files
              ~all_suppressions
              new_errors
+        |> ErrorCollator.update_error_state_timestamps
     )
   in
 
@@ -1769,6 +1665,14 @@ let recheck_impl
       ~check_skip_count
       ~slowest_file
       ~num_slow_files
+      ~time_to_resolve_all_type_errors:
+        error_resolution_stat.ErrorCollator.time_to_resolve_all_type_errors
+      ~time_to_resolve_all_type_errors_in_one_file:
+        error_resolution_stat.ErrorCollator.time_to_resolve_all_type_errors_in_one_file
+      ~time_to_resolve_all_subtyping_errors:
+        error_resolution_stat.ErrorCollator.time_to_resolve_all_subtyping_errors
+      ~time_to_resolve_all_subtyping_errors_in_one_file:
+        error_resolution_stat.ErrorCollator.time_to_resolve_all_subtyping_errors_in_one_file
       ~first_internal_error
       ~scm_changed_mergebase:changed_mergebase
       ~profiling;
@@ -2007,6 +1911,7 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
         let%lwt (parsed, dirty_modules_parsed, invalid_parsed_hashes) =
           MultiWorkerLwt.fold
             workers
+            ~blocking:(Options.blocking_worker_communication options)
             ~job:restore_parsed
             ~merge
             ~neutral
@@ -2015,6 +1920,7 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
         let%lwt (unparsed, dirty_modules_unparsed, invalid_unparsed_hashes) =
           MultiWorkerLwt.fold
             workers
+            ~blocking:(Options.blocking_worker_communication options)
             ~job:restore_unparsed
             ~merge
             ~neutral
@@ -2039,6 +1945,7 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
         let%lwt dirty_modules_deleted =
           MultiWorkerLwt.fold
             workers
+            ~blocking:(Options.blocking_worker_communication options)
             ~job:delete_unused
             ~merge:Modulename.Set.union
             ~neutral:Modulename.Set.empty
@@ -2085,7 +1992,7 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
             additional_local_errors,
             _
           ) =
-    let additional_libdef_files_not_delivered = ref (Options.libdef_in_checking options) in
+    let additional_libdef_files_not_delivered = ref true in
     parse ~options ~profiling ~workers ~reader (fun () ->
         if !additional_libdef_files_not_delivered then (
           let files = SSet.fold (fun name acc -> File_key.LibFile name :: acc) libs [] in
@@ -2098,15 +2005,7 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
   let%lwt (libs_ok, local_errors, warnings, suppressions, lib_exports, master_cx) =
     let suppressions = Error_suppressions.empty in
     let warnings = FilenameMap.empty in
-    init_libs
-      ~options
-      ~profiling
-      ~local_errors
-      ~warnings
-      ~suppressions
-      ~reader
-      ~validate_libdefs:(not (Options.libdef_in_checking options))
-      ordered_libs
+    init_libs ~options ~profiling ~local_errors ~warnings ~suppressions ~reader ordered_libs
   in
   let (parsed, unparsed, dirty_modules, local_errors) =
     ( FilenameSet.union parsed additional_parsed,
@@ -2161,7 +2060,12 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
   Hh_logger.info "Indexing files";
   let%lwt exports =
     with_memory_timer_lwt ~options "Indexing" profiling (fun () ->
-        Export_service.init ~workers ~reader ~libs:lib_exports parsed
+        Export_service.init
+          ~blocking_worker_communication:(Options.blocking_worker_communication options)
+          ~workers
+          ~reader
+          ~libs:lib_exports
+          parsed
     )
   in
 
@@ -2172,13 +2076,14 @@ let init_from_saved_state ~profiling ~workers ~saved_state ~updates ?env options
       env
   in
 
-  let collated_errors =
+  let (collated_errors, _) =
     ErrorCollator.update_local_collated_errors
       ~reader:abstract_reader
       ~options
       suppressions
       local_errors
       Collated_errors.empty
+    |> ErrorCollator.update_error_state_timestamps
   in
 
   let env =
@@ -2275,11 +2180,7 @@ let init_from_scratch ~profiling ~workers options =
    *)
   let (ordered_libs, libs) = Files.init file_options in
   let next_files_for_parse =
-    make_next_files
-      ~libs
-      ~file_options
-      ~include_libdef:(Options.libdef_in_checking options)
-      (Options.root options)
+    make_next_files ~libs ~file_options ~include_libdef:true (Options.root options)
   in
   Hh_logger.info "Parsing";
   MonitorRPC.status_update ~event:ServerStatus.(Parsing_progress { finished = 0; total = None });
@@ -2316,15 +2217,7 @@ let init_from_scratch ~profiling ~workers options =
   MonitorRPC.status_update ~event:ServerStatus.Load_libraries_start;
   let%lwt (libs_ok, local_errors, warnings, suppressions, lib_exports, master_cx) =
     let suppressions = Error_suppressions.empty in
-    init_libs
-      ~options
-      ~profiling
-      ~local_errors
-      ~warnings
-      ~suppressions
-      ~reader
-      ~validate_libdefs:(not (Options.libdef_in_checking options))
-      ordered_libs
+    init_libs ~options ~profiling ~local_errors ~warnings ~suppressions ~reader ordered_libs
   in
 
   Hh_logger.info "Resolving dependencies";
@@ -2337,25 +2230,35 @@ let init_from_scratch ~profiling ~workers options =
   in
   let%lwt dependency_info =
     with_memory_timer_lwt ~options "CalcDepsTypecheck" profiling (fun () ->
-        Dep_service.calc_dependency_info ~reader workers ~parsed:parsed_set
+        Dep_service.calc_dependency_info
+          ~blocking_worker_communication:(Options.blocking_worker_communication options)
+          ~reader
+          workers
+          ~parsed:parsed_set
     )
   in
 
   Hh_logger.info "Indexing files";
   let%lwt exports =
     with_memory_timer_lwt ~options "Indexing" profiling (fun () ->
-        Export_service.init ~workers ~reader ~libs:lib_exports parsed_set
+        Export_service.init
+          ~blocking_worker_communication:(Options.blocking_worker_communication options)
+          ~workers
+          ~reader
+          ~libs:lib_exports
+          parsed_set
     )
   in
   Hh_logger.info "Done";
 
-  let collated_errors =
+  let (collated_errors, _) =
     ErrorCollator.update_local_collated_errors
       ~reader:(Abstract_state_reader.Mutator_state_reader reader)
       ~options
       suppressions
       local_errors
       Collated_errors.empty
+    |> ErrorCollator.update_error_state_timestamps
   in
 
   let errors =
@@ -2624,7 +2527,7 @@ let check_files_for_init ~profiling ~options ~workers ~focus_targets ~parsed ~me
       in
       Base.Option.iter check_internal_error ~f:(Hh_logger.error "%s");
 
-      let collated_errors =
+      let (collated_errors, _) =
         Profiling_js.with_timer ~timer:"CollateErrors" profiling ~f:(fun () ->
             ErrorCollator.update_collated_errors
               ~reader:(Abstract_state_reader.Mutator_state_reader reader)
@@ -2633,6 +2536,7 @@ let check_files_for_init ~profiling ~options ~workers ~focus_targets ~parsed ~me
               ~all_suppressions:updated_suppressions
               errors
               collated_errors
+            |> ErrorCollator.update_error_state_timestamps
         )
       in
       let env =

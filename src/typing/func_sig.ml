@@ -107,24 +107,24 @@ class func_scope_visitor
           (* Convert the return expression's type T to Promise<T>. If the
              * expression type is itself a Promise<T>, ensure we still return
              * a Promise<T> via Promise.resolve. *)
-          let reason = mk_reason (RCustom "async return") loc in
+          let async_return_reason = mk_reason (RCustom "async return") loc in
           let t' =
             Flow.get_builtin_typeapp
               cx
-              reason
-              (OrdinaryName "Promise")
+              (mk_reason (desc_of_t t) loc)
+              "Promise"
               [
-                Tvar.mk_where cx reason (fun tvar ->
-                    let funt = Flow.get_builtin cx (OrdinaryName "$await") reason in
+                Tvar.mk_where cx async_return_reason (fun tvar ->
+                    let funt = Flow_js_utils.lookup_builtin_value cx "$await" async_return_reason in
                     let callt =
                       mk_functioncalltype
                         ~call_kind:RegularCallKind
-                        reason
+                        async_return_reason
                         None
                         [Arg t]
                         (open_tvar tvar)
                     in
-                    let reason = repos_reason (loc_of_reason (reason_of_t t)) reason in
+                    let reason = repos_reason (loc_of_reason (reason_of_t t)) async_return_reason in
                     Flow.flow
                       cx
                       ( funt,
@@ -139,29 +139,39 @@ class func_scope_visitor
                 );
               ]
           in
-          Flow.reposition cx ~desc:(desc_of_t t) loc t'
+          Flow.reposition cx loc t'
         | Generator _ ->
           (* Convert the return expression's type R to Generator<Y,R,N>, where
            * Y and R are internals, installed earlier. *)
-          let reason = mk_reason (RCustom "generator return") loc in
           let t' =
             Flow.get_builtin_typeapp
               cx
-              reason
-              (OrdinaryName "Generator")
-              [yield_t; Tvar.mk_where cx reason (fun tvar -> Flow.flow_t cx (t, tvar)); next_t]
+              (mk_reason (desc_of_t t) loc)
+              "Generator"
+              [
+                yield_t;
+                Tvar.mk_where cx (mk_reason (RCustom "generator return") loc) (fun tvar ->
+                    Flow.flow_t cx (t, tvar)
+                );
+                next_t;
+              ]
           in
-          Flow.reposition cx ~desc:(desc_of_t t) loc t'
+          Flow.reposition cx loc t'
         | AsyncGenerator _ ->
-          let reason = mk_reason (RCustom "async generator return") loc in
           let t' =
             Flow.get_builtin_typeapp
               cx
-              reason
-              (OrdinaryName "AsyncGenerator")
-              [yield_t; Tvar.mk_where cx reason (fun tvar -> Flow.flow_t cx (t, tvar)); next_t]
+              (mk_reason (desc_of_t t) loc)
+              "AsyncGenerator"
+              [
+                yield_t;
+                Tvar.mk_where cx (mk_reason (RCustom "async generator return") loc) (fun tvar ->
+                    Flow.flow_t cx (t, tvar)
+                );
+                next_t;
+              ]
           in
-          Flow.reposition cx ~desc:(desc_of_t t) loc t'
+          Flow.reposition cx loc t'
         | _ -> t
       in
       let use_op =
@@ -201,6 +211,7 @@ struct
       fparams = F.empty (fun _ _ _ -> None);
       body = None;
       return_t = Annotated (VoidT.why reason);
+      hook = NonHook;
       ret_annot_loc = Reason.loc_of_reason reason;
       statics = None;
     }
@@ -213,12 +224,13 @@ struct
       fparams = F.empty (fun _ _ _ -> None);
       body = None;
       return_t = return_annot_or_inferred;
+      hook = NonHook;
       ret_annot_loc = annot_loc;
       statics = None;
     }
 
   let functiontype cx ~arrow func_loc this_default x =
-    let { T.reason; kind; tparams; fparams; return_t; statics; _ } = x in
+    let { T.reason; kind; tparams; fparams; return_t; statics; hook; _ } = x in
     let this_type = F.this fparams |> Base.Option.value ~default:this_default in
     let return_t =
       match return_t with
@@ -227,6 +239,24 @@ struct
              && (not @@ F.all_params_annotated x.T.fparams) ->
         Context.mk_placeholder cx (TypeUtil.reason_of_t t)
       | _ -> TypeUtil.type_t_of_annotated_or_inferred return_t
+    in
+    let return_t =
+      match hook with
+      | HookDecl _
+      | HookAnnot ->
+        if Context.react_rule_enabled cx Options.DeepReadOnlyHookReturns then
+          Flow_js.mk_possibly_evaluated_destructor
+            cx
+            unknown_use
+            (TypeUtil.reason_of_t return_t)
+            return_t
+            (ReactDRO (loc_of_reason reason, HookReturn))
+            (Eval.generate_id ())
+        else
+          return_t
+      | NonHook
+      | AnyHook ->
+        return_t
     in
     let predicate =
       match kind with
@@ -239,6 +269,7 @@ struct
         params = F.value fparams;
         rest_param = F.rest fparams;
         return_t;
+        hook;
         predicate;
         def_reason = reason;
       }
@@ -252,7 +283,8 @@ struct
     if not arrow then Base.Option.iter func_loc ~f:(Type_env.bind_function_this cx this_type);
     poly_type_of_tparams (Type.Poly.generate_id ()) tparams t
 
-  let methodtype cx method_this_loc this_default { T.reason; kind; tparams; fparams; return_t; _ } =
+  let methodtype
+      cx method_this_loc this_default { T.reason; kind; tparams; fparams; return_t; hook; _ } =
     let params = F.value fparams in
     let (params_names, params_tlist) = List.split params in
     let rest_param = F.rest fparams in
@@ -273,6 +305,7 @@ struct
             ( dummy_static reason,
               mk_boundfunctiontype
                 ~this:param_this_t
+                ~hook
                 params_tlist
                 ~rest_param
                 ~def_reason
@@ -342,34 +375,20 @@ struct
           | _ -> failwith "Bad kind"
         in
         let () =
-          let t =
-            Flow.get_builtin_typeapp
-              cx
-              reason
-              (OrdinaryName iterable)
-              [yield_t; return_targ; next_t]
-          in
+          let t = Flow.get_builtin_typeapp cx reason iterable [yield_t; return_targ; next_t] in
           let t =
             Flow.reposition
               cx
-              ~desc:(desc_of_t t)
               (type_t_of_annotated_or_inferred return_t |> reason_of_t |> loc_of_reason)
               t
           in
           Flow.flow_t cx (type_t_of_annotated_or_inferred return_t, t)
         in
         let () =
-          let t =
-            Flow.get_builtin_typeapp
-              cx
-              reason
-              (OrdinaryName generator)
-              [yield_t; return_targ; next_t]
-          in
+          let t = Flow.get_builtin_typeapp cx reason generator [yield_t; return_targ; next_t] in
           let t =
             Flow.reposition
               cx
-              ~desc:(desc_of_t t)
               (type_t_of_annotated_or_inferred return_t |> reason_of_t |> loc_of_reason)
               t
           in
@@ -433,7 +452,7 @@ struct
           | Async ->
             let reason = mk_annot_reason (RType (OrdinaryName "Promise")) loc in
             let void_t = VoidT.at loc in
-            let t = Flow.get_builtin_typeapp cx reason (OrdinaryName "Promise") [void_t] in
+            let t = Flow.get_builtin_typeapp cx reason "Promise" [void_t] in
             let use_op =
               Op
                 (FunImplicitReturn
@@ -445,13 +464,7 @@ struct
           | Generator _ ->
             let reason = mk_annot_reason (RType (OrdinaryName "Generator")) loc in
             let void_t = VoidT.at loc in
-            let t =
-              Flow.get_builtin_typeapp
-                cx
-                reason
-                (OrdinaryName "Generator")
-                [yield_t; void_t; next_t]
-            in
+            let t = Flow.get_builtin_typeapp cx reason "Generator" [yield_t; void_t; next_t] in
             let use_op =
               Op
                 (FunImplicitReturn
@@ -463,13 +476,7 @@ struct
           | AsyncGenerator _ ->
             let reason = mk_annot_reason (RType (OrdinaryName "AsyncGenerator")) loc in
             let void_t = VoidT.at loc in
-            let t =
-              Flow.get_builtin_typeapp
-                cx
-                reason
-                (OrdinaryName "AsyncGenerator")
-                [yield_t; void_t; next_t]
-            in
+            let t = Flow.get_builtin_typeapp cx reason "AsyncGenerator" [yield_t; void_t; next_t] in
             let use_op =
               Op
                 (FunImplicitReturn
