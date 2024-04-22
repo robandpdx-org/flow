@@ -682,3 +682,56 @@ jobs:
   #     run: |
   #       echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
   #       npm publish ./dist/npm-try-flow-website-js.tgz
+  build_linux_arm64:
+    runs-on: 2-core-ubuntu-arm
+    container:
+      image: flowtype/flow-ci:linux-arm64
+    env:
+      TERM: dumb
+      OPAMYES: true
+    steps:
+      - uses: actions/checkout@v4.1.3
+      - name: Create cache breaker
+        run: .circleci/make_opam_cachebreaker.sh > .circleci/opamcachebreaker
+        shell: bash
+      - name: opam cache
+        uses: actions/cache@v4.0.2
+        with:
+          path: |-
+            ~/.opam
+            _opam
+          key: v1-opam-cache-${{ runner.arch }}-{{ hashfiles('.circleci/opamcachebreaker' }}
+      - name: Init opam
+        run: .circleci/opam_init.sh
+      - name: Install deps from opam
+        run: make deps
+      - name: Build flow
+        run: |
+          opam exec -- make bin/flow dist/flow.zip
+          mkdir -p bin/linux-arm64 && cp bin/flow bin/linux-arm64/flow
+      - name: Build libflowparser
+        run: opam exec -- make -C src/parser dist/libflowparser.zip
+      - name: Create artifacts
+        run: |
+          cp dist/flow.zip dist/flow-linux-arm64.zip
+          cp src/parser/dist/libflowparser.zip dist/libflowparser-linux-arm64.zip
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: build_linux_arm64_dist
+          path: |
+            dist/flow-linux-arm64.zip
+            dist/libflowparser-linux-arm64.zip
+  runtests_linux_arm64:
+    needs: build_linux_arm64
+    runs-on: 2-core-ubuntu-arm
+    container:
+      image: flowtype/flow-ci:linux-arm64
+    env:
+      TERM: dumb
+      OPAMYES: true
+      FLOW_RUNTESTS_PARALLELISM: 8
+    steps:
+      - uses: actions/checkout@v4.1.3
+      - name: Run tests
+        run: ./runtests.sh bin/linux-arm64/flow | cat
